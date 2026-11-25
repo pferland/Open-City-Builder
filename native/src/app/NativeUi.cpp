@@ -21,6 +21,8 @@
 #include "gz/GZCOMDirector.h"
 #include "gz/GZFramework.h"
 #include "gz/LegacyControl.h"
+#include "rz/LanguageManager.h"
+#include "rz/cRZSysServPtr.h"
 #include "gz/ScriptTerp.h"
 #include "gz/ScriptVocab.h"
 #include "gz/ScriptableControlSet.h"
@@ -91,25 +93,81 @@ std::string FindDataFile(const std::string& relative) {
     return dir.string();
 }
 
-bool LoadResourceBytes(std::uint32_t type, std::uint32_t group, std::uint32_t instance, std::vector<std::uint8_t>& bytes) {
-    static std::vector<std::unique_ptr<dbpf::Package>> packages;
-    static std::vector<std::string> names;
-    if (names.empty()) {
-        const char* language = std::getenv("SC4_LANGUAGE");
-        names.push_back(std::string(language && *language ? language : "English") + "/SimCityLocale.dat");
-        // later packages override earlier ones in the game's resource manager: the expansion first, then the base set newest first
-        for (const char* name : {"EP1.dat", "SimCity_5.dat", "SimCity_4.dat", "SimCity_3.dat", "SimCity_2.dat", "SimCity_1.dat", "Intro.dat"})
-            names.push_back(name);
+std::string FindLocaleFile(bool& fromLM) {
+    fromLM = false;
+    // 1. Explicit SC4_LANGUAGE environment variable
+    if (const char* env = std::getenv("SC4_LANGUAGE"); env && *env) {
+        std::string path = FindDataFile(std::string(env) + "/SimCityLocale.dat");
+        if (!path.empty()) return path;
     }
-    for (std::size_t i = 0; i < names.size(); ++i) {
-        if (i == packages.size()) {   // open the next one only when the earlier ones do not have it
-            auto package = std::make_unique<dbpf::Package>();
-            const std::string path = FindDataFile(names[i]);
-            if (!path.empty()) package->Open(path);
-            packages.push_back(std::move(package));
+    // 2. Active language from LanguageManager
+    cRZSysServPtr<cIGZLanguageManager, kGZSID_cRZLanguageManager, kGZIID_cIGZLanguageManager> languages;
+    if (languages) {
+        cRZString folder;
+        if (languages->GetLanguageDirectoryName(folder, 0) && folder.Strlen() > 0) {
+            std::string path = FindDataFile(std::string(folder.ToChar()) + "/SimCityLocale.dat");
+            if (!path.empty()) {
+                fromLM = true;
+                return path;
+            }
         }
-        const dbpf::Entry* entry = packages[i]->Find(type, group, instance);
-        if (entry && packages[i]->Read(*entry, bytes)) return true;
+    }
+    // 3. Fallbacks: English, UKEnglsh
+    for (const char* fallback : {"English", "UKEnglsh"}) {
+        std::string path = FindDataFile(std::string(fallback) + "/SimCityLocale.dat");
+        if (!path.empty()) return path;
+    }
+    // 4. Any language subdirectory under GameDataDir() containing SimCityLocale.dat
+    std::filesystem::path dir(GameDataDir());
+    std::error_code error;
+    if (std::filesystem::is_directory(dir, error)) {
+        for (const auto& entry : std::filesystem::directory_iterator(dir, error)) {
+            if (!entry.is_directory(error)) continue;
+            for (const auto& sub : std::filesystem::directory_iterator(entry.path(), error)) {
+                std::string name = sub.path().filename().string();
+                for (char& c : name) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                if (name == "simcitylocale.dat") return sub.path().string();
+            }
+        }
+    }
+    return {};
+}
+
+bool LoadResourceBytes(std::uint32_t type, std::uint32_t group, std::uint32_t instance, std::vector<std::uint8_t>& bytes) {
+    static std::vector<std::unique_ptr<dbpf::Package>> basePackages;
+    static std::unique_ptr<dbpf::Package> localePackage;
+    static std::string openedLocalePath;
+    static bool localeResolved = false;
+
+    if (!localePackage || !localeResolved) {
+        bool fromLM = false;
+        std::string localePath = FindLocaleFile(fromLM);
+        if (!localePath.empty() && localePath != openedLocalePath) {
+            auto pkg = std::make_unique<dbpf::Package>();
+            if (pkg->Open(localePath)) {
+                localePackage = std::move(pkg);
+                openedLocalePath = localePath;
+                if (fromLM || (std::getenv("SC4_LANGUAGE") && *std::getenv("SC4_LANGUAGE"))) localeResolved = true;
+            }
+        } else if (!localePath.empty() && fromLM) {
+            localeResolved = true;
+        }
+    }
+    if (localePackage) {
+        const dbpf::Entry* entry = localePackage->Find(type, group, instance);
+        if (entry && localePackage->Read(*entry, bytes)) return true;
+    }
+
+    static const char* const kBaseNames[] = {"EP1.dat", "SimCity_5.dat", "SimCity_4.dat", "SimCity_3.dat", "SimCity_2.dat", "SimCity_1.dat", "Intro.dat"};
+    for (std::size_t i = 0; i < sizeof(kBaseNames)/sizeof(kBaseNames[0]); ++i) {
+        if (i == basePackages.size()) {
+            auto package = std::make_unique<dbpf::Package>();
+            const std::string path = FindDataFile(kBaseNames[i]);
+            if (!path.empty()) package->Open(path);
+            basePackages.push_back(std::move(package));
+        }
+        const dbpf::Entry* entry = basePackages[i]->Find(type, group, instance);
+        if (entry && basePackages[i]->Read(*entry, bytes)) return true;
     }
     return false;
 }

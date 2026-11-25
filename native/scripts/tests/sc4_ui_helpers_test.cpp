@@ -553,8 +553,17 @@ static void TestDialogs() {
     }
     CHECK(sawTitle && sawBody);
 
+    host.captions.clear();
     mgr.popupAnswer = 0x8a8dfd4e;   // OK
-    CHECK(nSC4UI::GenericConfirmationDialog(cRZString("Sure?"), cRZString("Really?"), nullptr, nullptr));
+    CHECK(nSC4UI::GenericConfirmationDialog(cRZString("Create a Connection"),
+                                            cRZString("Would you like to connect to SimNation?"), nullptr, nullptr));
+    sawTitle = false; sawBody = false;
+    for (const std::string& caption : host.captions) {
+        if (caption == "Create a Connection") sawTitle = true;
+        if (caption == "Would you like to connect to SimNation?") sawBody = true;
+    }
+    CHECK(sawTitle && sawBody);
+
     mgr.popupAnswer = 0x8a8dfd4a;   // Cancel
     CHECK(!nSC4UI::GenericConfirmationDialog(cRZString("Sure?"), cRZString("Really?"), nullptr, nullptr));
 

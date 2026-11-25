@@ -670,8 +670,12 @@ public:
     // i386 0x0004ce32: title, the format Sprintf'd with the neighbor's name (else the default name string), no OK / cancel text
     bool ConfirmationDialog(std::uint32_t titleId, std::uint32_t formatId, std::uint32_t defaultNameId, const cIGZString* name) override {
         sc4::cSLString title(0x6a231eaa, titleId, true), format(0x6a231eaa, formatId, true), fallback(0x6a231eaa, defaultNameId, true);
+        if (title.Strlen() == 0) title.AssignFromCString("Create a Connection");
+        if (fallback.Strlen() == 0) fallback.AssignFromCString("SimNation");
+        if (format.Strlen() == 0) format.AssignFromCString("Would you like to create a connection to %s?");
+        const char* targetName = (name && name->Strlen() != 0) ? name->ToChar() : fallback.ToChar();
         cRZString text;
-        text.Sprintf(format.ToChar(), name ? name->ToChar() : fallback.ToChar());
+        text.Sprintf(format.ToChar(), targetName);
         return nSC4UI::GenericConfirmationDialog(title, text, nullptr, nullptr);
     }
 } g_neighborsHost;
