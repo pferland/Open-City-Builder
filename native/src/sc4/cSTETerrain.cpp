@@ -1036,19 +1036,33 @@ void cSTETerrain::DetermineTextureFamilyMembersForGridCells() {
 
 void cSTETerrain::ReadMiscTexturesForTerrainTypes(ITerrainIniFile& ini) {
     // 0x10073b602: the cliff and beach texture ids of terrain type 0, plus the fixed deep-water ids.
-    const cRZString section(kTerrainTextureMapSection);
+    const char* sections[] = {
+        "TropicalMiscTextures",
+        "DesertMiscTextures",
+        "TemperateMiscTextures",
+        "ArcticMiscTextures",
+        "TerrainMiscTextures",
+        kTerrainTextureMapSection
+    };
     cRZString value;
-    if (ini.ReadEntry(section, cRZString("HighCliff"), value)) {
-        HighCliffTextureId() = ParseTerrainUint(value.ToChar());
-        AddToTerrainTypeTextureList(0, HighCliffTextureId());
-    }
-    if (ini.ReadEntry(section, cRZString("LowCliff"), value)) {
-        LowCliffTextureId() = ParseTerrainUint(value.ToChar());
-        AddToTerrainTypeTextureList(0, LowCliffTextureId());
-    }
-    if (ini.ReadEntry(section, cRZString("Beach"), value)) {
-        BeachTextureId() = ParseTerrainUint(value.ToChar());
-        AddToTerrainTypeTextureList(0, BeachTextureId());
+    bool foundHigh = false, foundLow = false, foundBeach = false;
+    for (const char* secName : sections) {
+        const cRZString section(secName);
+        if (!foundHigh && ini.ReadEntry(section, cRZString("HighCliff"), value)) {
+            HighCliffTextureId() = ParseTerrainUint(value.ToChar());
+            AddToTerrainTypeTextureList(0, HighCliffTextureId());
+            foundHigh = true;
+        }
+        if (!foundLow && ini.ReadEntry(section, cRZString("LowCliff"), value)) {
+            LowCliffTextureId() = ParseTerrainUint(value.ToChar());
+            AddToTerrainTypeTextureList(0, LowCliffTextureId());
+            foundLow = true;
+        }
+        if (!foundBeach && ini.ReadEntry(section, cRZString("Beach"), value)) {
+            BeachTextureId() = ParseTerrainUint(value.ToChar());
+            AddToTerrainTypeTextureList(0, BeachTextureId());
+            foundBeach = true;
+        }
     }
     AddToTerrainTypeTextureList(0, 0x13);      // deep sea bed (below kMinWaterDepthForDeepSeaBedTexture)
     AddToTerrainTypeTextureList(0, 0x14);      // shallow sea bed
@@ -2162,6 +2176,7 @@ void cSTETerrain::DecideSurfaceCover(const TerrainRect& r) {
             } else {                                                          // water
                 textureId = (depth < statics.minWaterDepthForDeepSeaBedTexture) ? 0x14u : 0x13u;
                 selectLand = false;
+                selectWater = true;
             }
             const std::uint16_t textureKey = textureKeyFor(textureId, index);
 

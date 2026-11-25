@@ -298,7 +298,7 @@ struct NativeTerrainHost final : ITerrainHost {
         const std::string path = std::string(std::getenv("TMPDIR") ? std::getenv("TMPDIR") : "/tmp/") + "sc4_terrain.ini";
         if (FILE* f = std::fopen(path.c_str(), "wb")) { std::fwrite(bytes.data(), 1, bytes.size(), f); std::fclose(f); } else return nullptr;
         auto* ini = new IniAdapter(path);
-        if (std::getenv("SC4_DEBUG")) { cRZString v; const bool ok = ini->ReadEntry(cRZString("TropicalTextureMapTable"), cRZString("HighCliff"), v); std::fprintf(stderr, "terrain host: HighCliff %d '%s' path %s\n", int(ok), v.ToChar(), path.c_str()); }
+        if (std::getenv("SC4_DEBUG")) { cRZString v; const bool ok = ini->ReadEntry(cRZString("TropicalMiscTextures"), cRZString("HighCliff"), v); std::fprintf(stderr, "terrain host: HighCliff %d '%s' path %s\n", int(ok), v.ToChar(), path.c_str()); }
         return ini;
     }
     void ChangeTerrainType(std::int32_t terrainType) override {}

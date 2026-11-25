@@ -2267,6 +2267,12 @@ int main() {
         surface.DecideSurfaceCover(TerrainRect{3, 3, 3, 3});
         CHECK(!hasKey(surface.Vertices()[static_cast<std::size_t>(surface.GetVertIndex(3, 3))], 0x14));
         CHECK(hasKey(surface.Vertices()[static_cast<std::size_t>(surface.GetVertIndex(3, 3))], 17));
+        // with texture info for shallow sea bed (0x14), it receives the 0x14 texture
+        cSTETerrain::SurfaceCoverTextures()[0x14] = cover;
+        surface.ClearSurfaceTextures(TerrainRect{3, 3, 3, 3});
+        surface.DecideSurfaceCover(TerrainRect{3, 3, 3, 3});
+        CHECK(hasKey(surface.Vertices()[static_cast<std::size_t>(surface.GetVertIndex(3, 3))], 0x14));
+        cSTETerrain::SurfaceCoverTextures().erase(0x14);
     }
     {
         // ---- CalculateNormalsAndAssignCliffTextures: flat normals, then a step becomes a cliff
