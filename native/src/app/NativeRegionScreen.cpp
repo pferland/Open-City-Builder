@@ -14,10 +14,14 @@
 
 #include "app/NativeBoot.h"
 #include "app/NativeCity.h"
+#include "app/NativeRegionTerrainGen.h"
 #include "app/NativeUi.h"
 #include "dbpf/DBPFReader.h"
 #include "gz/Buffer.h"
 #include "rz/cRZFile.h"
+#include "sc4/cSTETerrain.h"
+#include <chrono>
+#include <random>
 #include "lua/ISCLua.h"
 #include "gz/RZServices.h"
 #include "gz/WinCtrlMgr.h"
@@ -46,6 +50,74 @@ cISC4Region* ActiveRegion() {
     return nation ? nation->GetActiveRegion() : nullptr;
 }
 cSC4RegionalCity* Concrete(cISC4RegionalCity* city) { return static_cast<cSC4RegionalCity*>(city); }
+
+// Cached procedural heightmap for the active region (<regions>/<dir>/heightmap.bmp), used to render un-saved city
+// previews on the Region Screen and seed terrain when entering an empty city tile.
+std::string g_regionHmDir;
+std::uint32_t g_regionHmW = 0, g_regionHmH = 0;
+std::vector<std::uint8_t> g_regionHmGray;
+
+bool EnsureRegionHeightmapLoaded(cISC4Region* region) {
+    if (!region) return false;
+    cIGZString* dirName = region->GetDirectoryName();
+    if (!dirName || dirName->Strlen() == 0) return false;
+    std::string dir = std::string(cSC4Nation::msRegionDirectory.ToChar()) + dirName->ToChar();
+    if (!dir.empty() && dir.back() != '/') dir.push_back('/');
+    if (g_regionHmDir != dir) {
+        g_regionHmDir = dir;
+        g_regionHmW = g_regionHmH = 0;
+        g_regionHmGray.clear();
+        const std::string hmPath = dir + "heightmap.bmp";
+        if (cRZFile::FileExists(cRZString(hmPath.c_str()))) {
+            native::LoadGrayscaleHeightFile(hmPath.c_str(), g_regionHmW, g_regionHmH, g_regionHmGray);
+        }
+    }
+    return g_regionHmW > 0 && g_regionHmH > 0 && g_regionHmGray.size() >= static_cast<std::size_t>(g_regionHmW) * g_regionHmH;
+}
+
+bool SliceHeightmap(std::uint32_t srcX, std::uint32_t srcZ, std::uint32_t w, std::uint32_t h, std::vector<std::uint8_t>& out) {
+    if (g_regionHmW == 0 || g_regionHmH == 0 || srcX + w > g_regionHmW || srcZ + h > g_regionHmH) return false;
+    out.resize(static_cast<std::size_t>(w) * h);
+    for (std::uint32_t y = 0; y < h; ++y) {
+        std::memcpy(&out[static_cast<std::size_t>(y) * w], &g_regionHmGray[static_cast<std::size_t>(srcZ + y) * g_regionHmW + srcX], w);
+    }
+    return true;
+}
+
+void RegionImportScaleAndSeaLevel(float& outScale, float& outSeaLevel) {
+    static bool sCached = false;
+    static float sScale = 3.0f;
+    static float sSeaLevel = 250.0f;
+    if (!sCached && SL::spRM) {
+        sCached = true;
+        void* raw = nullptr;
+        const cGZPersistResourceKey key{0x6534284a, 0x88cd66e9, 1};
+        if (SL::spRM->GetResource(key, 0xa52160f5, &raw, 0, nullptr) && raw) {
+            auto* exemplar = static_cast<cISCResExemplar*>(raw);
+            if (const cISCPropertyHolder* holder = exemplar->AsISCPropertyHolder()) {
+                float v = 0.0f;
+                if (cSCPropertyHelp::GetPropertyValue(holder, 0x48cd7b28, v) && v > 0.0f) sScale = v;
+                if (cSCPropertyHelp::GetPropertyValue(holder, 0x48cd7b21, v) && v > 0.0f) sSeaLevel = v;
+            }
+            exemplar->Release();
+        }
+    }
+    outScale = sScale;
+    outSeaLevel = sSeaLevel;
+}
+
+cGZBuffer* BufferFromBgra(std::uint32_t w, std::uint32_t h, const std::vector<std::uint8_t>& bgra) {
+    if (w == 0 || h == 0 || bgra.size() < static_cast<std::size_t>(w) * h * 4u) return nullptr;
+    auto* buf = new cGZBuffer();
+    buf->AddRef();
+    buf->Init(w, h, cGZBufferColorType{kBufferColorARGB8888, 32});
+    auto* dst = static_cast<std::uint8_t*>(buf->GetColorSurfaceBits());
+    const std::uint32_t stride = buf->GetColorSurfaceStride();
+    for (std::uint32_t y = 0; y < h; ++y) {
+        std::memcpy(dst + static_cast<std::size_t>(y) * stride, &bgra[static_cast<std::size_t>(y) * w * 4u], static_cast<std::size_t>(w) * 4u);
+    }
+    return buf;
+}
 
 // ---- a CPU bitmap as the window system's buffer (the region snapshots) --------------------------------------------------------
 class BitmapBuffer final : public IWinBuffer {
@@ -478,7 +550,22 @@ public:
         if (!path.empty() && cRZFile::FileExists(cRZString(path.c_str()))) {
             return g_services.loadCity && g_services.loadCity(path, holder) ? 1u : 0u;
         }
-        return g_services.newCity && g_services.newCity(holder, false) ? 1u : 0u;
+        if (!g_services.newCity) return 0u;
+        bool hasSub = false;
+        if (EnsureRegionHeightmapLoaded(region)) {
+            int cw = 1, ch = 1;
+            adapter->GetSize(cw, ch);
+            const std::uint32_t vertsX = static_cast<std::uint32_t>(cw << 6) + 1u;
+            const std::uint32_t vertsZ = static_cast<std::uint32_t>(ch << 6) + 1u;
+            std::vector<std::uint8_t> sub;
+            if (x >= 0 && z >= 0 && SliceHeightmap(static_cast<std::uint32_t>(x) << 6, static_cast<std::uint32_t>(z) << 6, vertsX, vertsZ, sub)) {
+                native::SetNewCityHeightImage(sub.data(), vertsX, vertsZ);
+                hasSub = true;
+            }
+        }
+        const bool created = g_services.newCity(holder, false);
+        if (hasSub) native::ClearNewCityHeightImage();
+        return created ? 1u : 0u;
     }
     void QuitToRegionSelect(bool) override {}
 
@@ -492,28 +579,57 @@ public:
     bool LoadCityThumbnails(int x, int z, IWinBuffer** image, IWinBuffer** mask) override {
         cISC4Region* region = ActiveRegion();
         cRZAutoRefCount<cISC4RegionalCity>* holder = region ? region->GetCity(x, z) : nullptr;
-        if (!holder || !holder->get() || !DecodeFunction()) {
-            if (std::getenv("SC4_DEBUG")) std::printf("region: city %d,%d no thumbnail (region %d, city %d, decoder %d)\n", x, z, region != nullptr, holder && holder->get(), DecodeFunction() != nullptr);
-            return false;
+        if (holder && holder->get() && DecodeFunction()) {
+            cRZString path;
+            Concrete(holder->get())->GetCitySaveFilePath(path);
+            dbpf::Package package;
+            if (package.Open(path.ToChar())) {
+                auto load = [&](std::uint32_t instance) -> IWinBuffer* {
+                    const dbpf::Entry* entry = package.Find(0x8a2482b9, 0x4a2482bb, instance);
+                    std::vector<std::uint8_t> bytes;
+                    if (!entry || !package.Read(*entry, bytes)) return nullptr;
+                    cGZBuffer* decoded = DecodeFunction()(bytes);
+                    return decoded ? new BitmapBuffer(decoded) : nullptr;
+                };
+                *image = load(0);
+                *mask = load(2);
+                if (*image) {
+                    if (std::getenv("SC4_DEBUG")) std::printf("region: city %d,%d thumbnail loaded from %s\n", x, z, path.ToChar());
+                    return true;
+                }
+            }
         }
-        cRZString path;
-        Concrete(holder->get())->GetCitySaveFilePath(path);
-        dbpf::Package package;
-        if (!package.Open(path.ToChar())) {
-            if (std::getenv("SC4_DEBUG")) std::printf("region: city %d,%d cannot open %s\n", x, z, path.ToChar());
-            return false;
+        if (region && x >= 0 && z >= 0 && EnsureRegionHeightmapLoaded(region)) {
+            std::vector<cISC4Region::cLocation> locations;
+            region->GetCityLocations(locations);
+            for (const auto& loc : locations) {
+                if (loc.x != x || loc.z != z) continue;
+                const std::uint32_t edge = 1u << (loc.size & 0x1fu);
+                const std::uint32_t verts = (edge << 6) + 1u;
+                std::vector<std::uint8_t> sub;
+                if (!SliceHeightmap(static_cast<std::uint32_t>(x) << 6, static_cast<std::uint32_t>(z) << 6, verts, verts, sub)) break;
+                float scale = 3.0f;
+                float seaLevel = 250.0f;
+                RegionImportScaleAndSeaLevel(scale, seaLevel);
+                std::vector<float> altitudes(sub.size());
+                for (std::size_t i = 0; i < sub.size(); ++i) altitudes[i] = static_cast<float>(sub[i]) * scale;
+                std::uint32_t tw = 0, th = 0;
+                std::vector<std::uint8_t> colorBgra, maskBgra;
+                if (native::RenderRegionCityThumbnail(altitudes.data(), verts, verts, seaLevel, tw, th, colorBgra, maskBgra)) {
+                    cGZBuffer* imgBuf = BufferFromBgra(tw, th, colorBgra);
+                    cGZBuffer* mskBuf = BufferFromBgra(tw, th, maskBgra);
+                    if (imgBuf && mskBuf) {
+                        *image = new BitmapBuffer(imgBuf);
+                        *mask = new BitmapBuffer(mskBuf);
+                        return true;
+                    }
+                    if (imgBuf) imgBuf->Release();
+                    if (mskBuf) mskBuf->Release();
+                }
+                break;
+            }
         }
-        auto load = [&](std::uint32_t instance) -> IWinBuffer* {
-            const dbpf::Entry* entry = package.Find(0x8a2482b9, 0x4a2482bb, instance);
-            std::vector<std::uint8_t> bytes;
-            if (!entry || !package.Read(*entry, bytes)) return nullptr;
-            cGZBuffer* decoded = DecodeFunction()(bytes);
-            return decoded ? new BitmapBuffer(decoded) : nullptr;
-        };
-        *image = load(0);
-        *mask = load(2);
-        if (std::getenv("SC4_DEBUG")) std::printf("region: city %d,%d thumbnail %s from %s\n", x, z, *image ? "loaded" : "MISSING", path.ToChar());
-        return *image != nullptr;
+        return false;
     }
 
     // The region screen's tuning exemplar {0x6534284a, 0x690f693f, 0xaa383bfe} (ReadTunableValues, Mac i386 0x0019fbde): scroll
@@ -535,7 +651,12 @@ public:
         return true;
     }
     bool CameraBasis(RegionCameraBasis&) override { return false; }
-    void SetWaterErosionTunables(std::uint32_t, std::uint32_t, std::uint32_t) override {}
+    void SetWaterErosionTunables(std::uint32_t clicks, std::uint32_t flowSteps, std::uint32_t smoothing) override {
+        auto& s = sc4::cSTETerrain::Statics();
+        s.imageImportWaterErosionIterations = static_cast<std::int32_t>(clicks);
+        s.imageImportFlowSteps = static_cast<std::int32_t>(flowSteps);
+        s.imageImportSmoothingIterations = static_cast<std::int32_t>(smoothing);
+    }
     void SetRegionHeightGlobals(std::uint32_t base, std::uint32_t other) override {
         cSC4Region::sBaseTerrainTypeHeight[0] = base;
         cSC4Region::sBaseTerrainTypeHeight[1] = other;
@@ -563,8 +684,42 @@ public:
         cISC4Region* region = nation->GetRegion(index);
         if (!region) return -1;
         region->Init();
+        std::vector<cISC4Region::cLocation> locations;
+        region->GetCityLocations(locations);
         region->SetBaseTerrainType(baseTerrainType == 1 ? cISC4Region::kBaseTerrainType1 : cISC4Region::kBaseTerrainType0);
         region->Shutdown();
+
+        const char* flatEnv = std::getenv("SC4_FLAT_REGION");
+        if ((!flatEnv || !*flatEnv) && !locations.empty()) {
+            std::uint32_t maxX = 0, maxZ = 0;
+            for (const auto& loc : locations) {
+                const std::uint32_t edge = 1u << (loc.size & 0x1fu);
+                maxX = std::max(maxX, static_cast<std::uint32_t>(loc.x) + edge);
+                maxZ = std::max(maxZ, static_cast<std::uint32_t>(loc.z) + edge);
+            }
+            if (cIGZString* dirName = region->GetDirectoryName(); dirName && dirName->Strlen() != 0 && maxX > 0 && maxZ > 0) {
+                std::uint64_t seed = 0;
+                if (const char* seedEnv = std::getenv("SC4_REGION_SEED"); seedEnv && *seedEnv) {
+                    seed = std::strtoull(seedEnv, nullptr, 0);
+                } else {
+                    std::random_device rd;
+                    const auto now = static_cast<std::uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count());
+                    seed = (static_cast<std::uint64_t>(rd()) << 32) ^ rd() ^ std::hash<std::string>{}(name) ^ now;
+                }
+                std::vector<std::uint8_t> gray;
+                const std::uint32_t hmW = (maxX << 6) + 1u;
+                const std::uint32_t hmH = (maxZ << 6) + 1u;
+                float scale = 3.0f;
+                float seaLevel = 250.0f;
+                RegionImportScaleAndSeaLevel(scale, seaLevel);
+                if (native::GenerateProceduralRegionHeightmap({hmW, hmH, baseTerrainType, seed, seaLevel, scale}, gray)) {
+                    std::string dir = std::string(cSC4Nation::msRegionDirectory.ToChar()) + dirName->ToChar();
+                    if (!dir.empty() && dir.back() != '/') dir.push_back('/');
+                    native::SaveGrayscaleBmp(dir + "heightmap.bmp", hmW, hmH, gray);
+                    g_regionHmDir.clear();
+                }
+            }
+        }
         return static_cast<int>(index);
     }
     void ShowRegionMessage(std::uint32_t group, std::uint32_t titleInstance, std::uint32_t bodyInstance) override {

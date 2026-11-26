@@ -9,6 +9,7 @@
 #include "app/NativeCity.h"
 #include "app/NativeLotConstruction.h"
 #include "app/NativeProps.h"
+#include "app/NativeRegionTerrainGen.h"
 #include "app/NativeCityView.h"
 #include "app/NativeBoot.h"
 #include "app/NativeFlora.h"
@@ -89,6 +90,34 @@ struct CityHost final : sc4::ICityHost {
     // the region view thumbnails are copied from the city's previous file (cSC4City::WriteRegionViewThumbnail)
     cIGZPersistDBSegment* OpenSaveGame(const cIGZString& path) override { return sc4::SC4OpenSaveGame(path, false, true); }
     void CloseSaveGame(cIGZPersistDBSegment* segment) override { sc4::SC4CloseSaveGame(segment); }
+    bool WriteRegionViewThumbnail(cIGZPersistDBSegment& segment) override {
+        sc4::cSTETerrain* terrain = CityTerrainComponent();
+        sc4::cSC4City* city = HostCity();
+        if (!terrain || !city) return false;
+        const int cellsX = city->CellCountX();
+        const int cellsZ = city->CellCountZ();
+        if (cellsX <= 0 || cellsZ <= 0) return false;
+        const std::uint32_t vertsX = static_cast<std::uint32_t>(cellsX) + 1u;
+        const std::uint32_t vertsZ = static_cast<std::uint32_t>(cellsZ) + 1u;
+        std::vector<float> altitudes(static_cast<std::size_t>(vertsX) * vertsZ);
+        for (std::uint32_t z = 0; z < vertsZ; ++z) {
+            for (std::uint32_t x = 0; x < vertsX; ++x) {
+                altitudes[static_cast<std::size_t>(z) * vertsX + x] =
+                    terrain->GetAltitudeAtVertex(static_cast<std::int32_t>(x), static_cast<std::int32_t>(z));
+            }
+        }
+        std::uint32_t w = 0, h = 0;
+        std::vector<std::uint8_t> colorBgra, maskBgra, colorPng, maskPng;
+        if (!native::RenderRegionCityThumbnail(altitudes.data(), vertsX, vertsZ, terrain->GetSeaLevel(), w, h, colorBgra, maskBgra))
+            return false;
+        if (!native::EncodeBgraToPng(w, h, colorBgra, colorPng) || !native::EncodeBgraToPng(w, h, maskBgra, maskPng))
+            return false;
+        const cGZPersistResourceKey colorKey{0x8a2482b9, 0x4a2482bb, 0};
+        const cGZPersistResourceKey maskKey{0x8a2482b9, 0x4a2482bb, 2};
+        const bool okColor = segment.WriteRecord(colorKey, colorPng.data(), static_cast<std::uint32_t>(colorPng.size()));
+        const bool okMask = segment.WriteRecord(maskKey, maskPng.data(), static_cast<std::uint32_t>(maskPng.size()));
+        return okColor && okMask;
+    }
     void PumpMessageServer2() override { if (cSC4App* app = BootApplication()) app->RunMessageServer2Pump(100, 500, 5000); }
     // cSC4City::SaveObliterated: the terrain (cSTETerrain::SaveObliterated) and then the flora simulator's slot 24 (flora.md
     // 10.3, save 0x006B2760)
