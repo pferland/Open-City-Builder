@@ -5,12 +5,16 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 
 #include "gz/cIGZMessage2.h"
 #include "rz/cRZMessage2Standard.h"
 #include "rz/cRZRandom.h"
 #include "sc4/App.h"
+#include "sc4/Nation.h"
+#include "sc4/SC4Utilities.h"
 #include "sc4/DBSegment.h"
+#include "app/NativeUi.h"
 #include "sc4/SaveGame.h"
 #include "sc4/cSC4City.h"
 #include "sc4/ServiceLocator.h"
@@ -156,11 +160,27 @@ public:
     void GetAdjacentCities(std::list<cRZAutoRefCount<cISC4RegionalCity>>& out, bool includeUnestablished) override {
         if (const sc4::cSC4NeighborsSimulator* neighbors = NeighborsSim()) neighbors->GetAdjacentCities(out, includeUnestablished);
     }
-    void CreateSavePathForCity(const cIGZString& cityName, std::uint32_t serial, cRZString& out) override {
-        out = cRZString(cityName.ToChar());
-        char tail[24];
-        std::snprintf(tail, sizeof tail, " %08x.sc4", serial);
-        out.AppendChars(tail, std::strlen(tail));
+    void CreateSavePathForCity(const cIGZString& cityName, std::uint32_t, cRZString& out) override {
+        std::string directory;
+        if (cISC4Region* region = g_app && g_app->GetNation() ? g_app->GetNation()->GetActiveRegion() : nullptr) {
+            if (cIGZString* dirName = region->GetDirectoryName(); dirName && dirName->Strlen() != 0) {
+                directory = std::string(cSC4Nation::msRegionDirectory.ToChar()) + dirName->ToChar();
+                if (!directory.empty() && directory.back() != '/') directory.push_back('/');
+            }
+        }
+        const std::string base = std::string("City - ") + cityName.ToChar();
+        for (unsigned copy = 1;; ++copy) {
+            std::string fileName = base;
+            if (copy > 1) fileName += " (" + std::to_string(copy) + ")";
+            fileName += ".sc4";
+            cRZString sanitized;
+            sc4::SC4SanitizeFileName(cRZString(fileName.c_str()), sanitized);
+            const std::string candidate = directory + sanitized.ToChar();
+            if (!std::filesystem::exists(candidate)) {
+                out = cRZString(candidate.c_str());
+                return;
+            }
+        }
     }
     int TutorialGUIDFromStoredValue(int value) override { return value; }
     int UILanguage() override { return 0; }
@@ -332,23 +352,52 @@ public:
     void GetRegionDirectory(cRZString& out) override { out = cSC4Nation::msRegionDirectory; }
     void GetRegionDownloadDirectory(cRZString& out) override { out = cSC4Nation::msRegionDownloadDirectory; }
     bool ReadRegionalCity(const cIGZString& path, cISC4RegionalCity** out) override { return ReadRegionalCityFile(path, *out); }
-    bool WriteRegionalCity(const cIGZString&, cISC4RegionalCity*) override { return false; }
-    void CreateSavePathForCity(const cIGZString& directory, const cIGZString& cityName, std::uint32_t serial, cRZString& out) override {
-        out = cRZString(directory.ToChar());
-        out.AppendChars(cityName.ToChar(), std::strlen(cityName.ToChar()));
-        char tail[24];
-        std::snprintf(tail, sizeof tail, " %08x.sc4", serial);
-        out.AppendChars(tail, std::strlen(tail));
+    bool WriteRegionalCity(const cIGZString& path, cISC4RegionalCity* city) override {
+        return sc4::SC4WriteRegionalCity(path, city);
     }
-    void CreateSavePathForCity(const cIGZString& cityName, std::uint32_t serial, cRZString& out) override {
-        out = cRZString(cityName.ToChar());
-        char tail[24];
-        std::snprintf(tail, sizeof tail, " %08x.sc4", serial);
-        out.AppendChars(tail, std::strlen(tail));
+    void CreateSavePathForCity(const cIGZString& directory, const cIGZString& cityName, std::uint32_t, cRZString& out) override {
+        std::string dir = directory.ToChar();
+        if (!dir.empty() && dir.back() != '/') dir.push_back('/');
+        const std::string base = std::string("City - ") + cityName.ToChar();
+        for (unsigned copy = 1;; ++copy) {
+            std::string fileName = base;
+            if (copy > 1) fileName += " (" + std::to_string(copy) + ")";
+            fileName += ".sc4";
+            cRZString sanitized;
+            sc4::SC4SanitizeFileName(cRZString(fileName.c_str()), sanitized);
+            const std::string candidate = dir + sanitized.ToChar();
+            if (!std::filesystem::exists(candidate)) {
+                out = cRZString(candidate.c_str());
+                return;
+            }
+        }
+    }
+    void CreateSavePathForCity(const cIGZString& cityName, std::uint32_t, cRZString& out) override {
+        std::string directory;
+        if (cISC4Region* region = g_app && g_app->GetNation() ? g_app->GetNation()->GetActiveRegion() : nullptr) {
+            if (cIGZString* dirName = region->GetDirectoryName(); dirName && dirName->Strlen() != 0) {
+                directory = std::string(cSC4Nation::msRegionDirectory.ToChar()) + dirName->ToChar();
+                if (!directory.empty() && directory.back() != '/') directory.push_back('/');
+            }
+        }
+        CreateSavePathForCity(cRZString(directory.c_str()), cityName, 0, out);
     }
     std::uint32_t CreateCitySerialNumber() override { return sc4::SC4CreateCitySerialNumber(); }
-    int ReadBinaryRecordToFile(const cGZPersistResourceKey&, const cIGZString&) override { return -1; }
-    bool HasResource(const cGZPersistResourceKey& key) override { cGZPersistResourceKey copy = key; return SL::spRM && SL::spRM->TestForKey(copy); }
+    int ReadBinaryRecordToFile(const cGZPersistResourceKey& key, const cIGZString& path) override {
+        std::vector<std::uint8_t> bytes;
+        if (!native::LoadResourceBytes(key.type, key.group, key.instance, bytes) || bytes.empty()) return -1;
+        FILE* f = std::fopen(path.ToChar(), "wb");
+        if (!f) return -1;
+        const std::size_t wrote = std::fwrite(bytes.data(), 1, bytes.size(), f);
+        std::fclose(f);
+        return wrote == bytes.size() ? static_cast<int>(wrote) : -1;
+    }
+    bool HasResource(const cGZPersistResourceKey& key) override {
+        cGZPersistResourceKey copy = key;
+        if (SL::spRM && SL::spRM->TestForKey(copy)) return true;
+        std::vector<std::uint8_t> probe;
+        return native::LoadResourceBytes(key.type, key.group, key.instance, probe);
+    }
     std::uint32_t RandomUint32UniformBelow(std::uint32_t range) override {
         static cRZRandom random(0x5c4);
         return random.RandomUint32Uniform(range);

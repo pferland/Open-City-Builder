@@ -10,6 +10,13 @@
 #include <vector>
 #include "app/NativeBoot.h"
 #include "sc4/App.h"
+#include "sc4/Nation.h"
+#include "sc4/Region.h"
+#include "sc4/RegionalCity.h"
+#include "sc4/SaveGame.h"
+#include "gz/Buffer.h"
+#include <algorithm>
+#include <fstream>
 #include "app/NativeAnimationTicks.h"
 #include "sc4/AnimationTickManager.h"
 #include "app/NativeUi.h"
@@ -185,6 +192,28 @@ struct NativeMySimAgentHost final : IMySimAgentHost {
 };
 // A brush shape as the terrain samples it (cS3DTextureBufferInfo: the size and the byte plane at +0x20).
 struct BrushTexture { std::uint32_t width = 0, height = 0; std::vector<std::uint8_t> pixels; };
+
+class MemoryHeightImage final : public ITerrainHeightImage {
+public:
+    MemoryHeightImage(std::uint32_t w, std::uint32_t h, std::vector<std::uint8_t> pixels)
+        : width_(w), height_(h), pixels_(std::move(pixels)) {}
+    std::uint32_t Width() const override { return width_; }
+    std::uint32_t Height() const override { return height_; }
+    std::uint8_t Gray(std::uint32_t x, std::uint32_t y) const override {
+        if (width_ == 0 || height_ == 0 || pixels_.empty()) return 0;
+        const std::uint32_t cx = std::min(x, width_ - 1);
+        const std::uint32_t cy = std::min(y, height_ - 1);
+        return pixels_[static_cast<std::size_t>(cy) * width_ + cx];
+    }
+    void Release() override { delete this; }
+
+private:
+    std::uint32_t width_ = 0, height_ = 0;
+    std::vector<std::uint8_t> pixels_;
+};
+
+std::uint32_t g_pendingHeightW = 0, g_pendingHeightH = 0;
+std::vector<std::uint8_t> g_pendingHeightPixels;
 
 struct NativeTerrainHost final : ITerrainHost {
     cIGZMessageServer2* Messages() override { return SL::spMS2; }
@@ -396,27 +425,109 @@ struct NativeTerrainHost final : ITerrainHost {
     void ListBrushResources(std::vector<cGZPersistResourceKey>& out) override { ListResources(out, 0x6534284a, 0x6a01fc2a); }
     ITerrainEffect* CreateTerrainEffect(std::uint32_t id0, std::uint32_t id1) override { return native::CreateTerrainEffect(id0, id1); }
     cRZString NewCityName() override { return {}; }
-    ITerrainHeightImage* NewCityHeightImage() override { return {}; }
+    ITerrainHeightImage* NewCityHeightImage() override {
+        if (g_pendingHeightW == 0 || g_pendingHeightH == 0 || g_pendingHeightPixels.empty()) return nullptr;
+        return new MemoryHeightImage(g_pendingHeightW, g_pendingHeightH, g_pendingHeightPixels);
+    }
     cIGZPersistDBSegment* NewCityObliteratedTerrainSegment() override {   // the obliteration template (DoCityObliteration)
         cSC4App* app = BootApplication();
         return app ? app->ObliterationSegment() : nullptr;
     }
-    bool NewCityBaseAltitude(float& out) override { return {}; }
-    ITerrainHeightImage* LoadHeightImage(const cRZString& path) override { return {}; }
+    bool NewCityBaseAltitude(float& out) override {
+        cISC4Region* region = Region();
+        if (!region) return false;
+        std::uint32_t raw = region->GetBaseTerrainHeight();
+        if (raw == 0) raw = region->GetBaseTerrainType() == cISC4Region::kBaseTerrainType1 ? 64u : 90u;
+        out = static_cast<float>(raw) * cSTETerrain::Statics().imageImportScaleFactor;
+        return true;
+    }
+    ITerrainHeightImage* LoadHeightImage(const cRZString& path) override {
+        if (path.Strlen() == 0) return nullptr;
+        std::uint32_t w = 0, h = 0;
+        std::vector<std::uint8_t> gray;
+        if (!LoadGrayscaleHeightFile(path.ToChar(), w, h, gray)) return nullptr;
+        return new MemoryHeightImage(w, h, std::move(gray));
+    }
     std::mt19937 rng_{12345};
-    cISC4RegionalCity* RegionalCity() override { return {}; }
+    cISC4RegionalCity* RegionalCity() override {
+        cSC4App* app = BootApplication();
+        return app ? app->CurrentRegionalCity() : nullptr;
+    }
     bool CityLoadInProgress() override { return {}; }
     cIGZMessageTarget2* TerrainMessageTarget() override { return &g_terrainTarget; }
-    cISC4Region* Region() override { return {}; }
-    void RegionalCityPosition(const cISC4RegionalCity& city, std::int32_t& x, std::int32_t& z) override {}
-    void RegionalCitySize(const cISC4RegionalCity& city, std::int32_t& width, std::int32_t& height) override {}
-    cIGZPersistDBSegment* OpenSaveGame(const cIGZString& path, bool readOnly, bool forReading) override { return {}; }
-    void CloseSaveGame(cIGZPersistDBSegment* segment) override {}
+    cISC4Region* Region() override {
+        cSC4App* app = BootApplication();
+        cISC4Nation* nation = app ? app->GetNation() : nullptr;
+        return nation ? nation->GetActiveRegion() : nullptr;
+    }
+    void RegionalCityPosition(const cISC4RegionalCity& city, std::int32_t& x, std::int32_t& z) override {
+        if (const auto* rc = dynamic_cast<const cSC4RegionalCity*>(&city)) rc->GetPosition(x, z);
+    }
+    void RegionalCitySize(const cISC4RegionalCity& city, std::int32_t& width, std::int32_t& height) override {
+        if (const auto* rc = dynamic_cast<const cSC4RegionalCity*>(&city)) rc->GetCitySize(width, height);
+    }
+    cIGZPersistDBSegment* OpenSaveGame(const cIGZString& path, bool readOnly, bool forReading) override {
+        return sc4::SC4OpenSaveGame(path, readOnly, forReading);
+    }
+    void CloseSaveGame(cIGZPersistDBSegment* segment) override { sc4::SC4CloseSaveGame(segment); }
     bool PopupDialogsEnabled() override { return {}; }
     bool ShowEdgeReconcileDialog(std::int32_t kind) override { return {}; }
     ITerrainView* AdoptLoadedTerrainView(void* loadedObject) override { return {}; }
 };
 }  // namespace
+
+void SetNewCityHeightImage(const std::uint8_t* gray, std::uint32_t width, std::uint32_t height) {
+    if (!gray || width == 0 || height == 0) {
+        g_pendingHeightW = g_pendingHeightH = 0;
+        g_pendingHeightPixels.clear();
+        return;
+    }
+    g_pendingHeightW = width;
+    g_pendingHeightH = height;
+    g_pendingHeightPixels.assign(gray, gray + static_cast<std::size_t>(width) * height);
+}
+
+void ClearNewCityHeightImage() {
+    g_pendingHeightW = g_pendingHeightH = 0;
+    g_pendingHeightPixels.clear();
+}
+
+bool LoadGrayscaleHeightFile(const char* path, std::uint32_t& outWidth, std::uint32_t& outHeight,
+                             std::vector<std::uint8_t>& outGray) {
+    outWidth = 0;
+    outHeight = 0;
+    outGray.clear();
+    if (!DecodeFunction() || !path || !*path) return false;
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    if (!file) return false;
+    const std::streamsize size = file.tellg();
+    if (size <= 0) return false;
+    file.seekg(0, std::ios::beg);
+    std::vector<std::uint8_t> bytes(static_cast<std::size_t>(size));
+    if (!file.read(reinterpret_cast<char*>(bytes.data()), size)) return false;
+    cGZBuffer* buf = DecodeFunction()(bytes);
+    if (!buf) return false;
+    outWidth = buf->Width();
+    outHeight = buf->Height();
+    const auto* bits = static_cast<const std::uint8_t*>(buf->GetColorSurfaceBits());
+    const std::uint32_t stride = buf->GetColorSurfaceStride();
+    if (!bits || outWidth == 0 || outHeight == 0) {
+        buf->Release();
+        outWidth = outHeight = 0;
+        return false;
+    }
+    outGray.resize(static_cast<std::size_t>(outWidth) * outHeight);
+    for (std::uint32_t y = 0; y < outHeight; ++y) {
+        const std::uint8_t* row = bits + static_cast<std::size_t>(y) * stride;
+        for (std::uint32_t x = 0; x < outWidth; ++x) {
+            const std::uint8_t b = row[x * 4 + 0], g = row[x * 4 + 1], r = row[x * 4 + 2];
+            outGray[static_cast<std::size_t>(y) * outWidth + x] =
+                static_cast<std::uint8_t>((int(r) * 77 + int(g) * 150 + int(b) * 29) >> 8);
+        }
+    }
+    buf->Release();
+    return true;
+}
 
 void InstallTerrainStub() { static NativeTerrainHost s; static NativeSurfaceWaterHost water; static NativeMySimAgentHost agent; sc4::SetTerrainHost(&s); gzcom::SetSurfaceWaterHost(&water); gzcom::SetMySimAgentHost(&agent); }
 void SetTerrainHostCity(cISC4City* city) { g_city = city; }

@@ -412,20 +412,34 @@ cGZBuffer* DecodeBmpBytes(const std::vector<std::uint8_t>& b) {
     auto u16 = [&](std::size_t o) { return std::uint32_t(b[o] | b[o + 1] << 8); };
     auto u32 = [&](std::size_t o) { return std::uint32_t(b[o] | b[o + 1] << 8 | b[o + 2] << 16 | std::uint32_t(b[o + 3]) << 24); };
     if (b.size() < 54 || b[0] != 'B' || b[1] != 'M') return nullptr;
-    const std::uint32_t offset = u32(10), w = u32(18), bpp = u16(28), compression = u32(30);
+    const std::uint32_t offset = u32(10), headerSize = u32(14), w = u32(18), bpp = u16(28), compression = u32(30);
     const std::int32_t rawH = std::int32_t(u32(22));
     const std::uint32_t h = std::uint32_t(rawH < 0 ? -rawH : rawH);
-    if ((bpp != 24 && bpp != 32) || compression != 0 || w == 0 || h == 0 || w > 8192 || h > 8192) return nullptr;
-    const std::size_t rowBytes = (std::size_t(w) * (bpp / 8) + 3) & ~std::size_t(3);
+    if ((bpp != 8 && bpp != 24 && bpp != 32) || (compression != 0 && compression != 3) || w == 0 || h == 0 || w > 8192 || h > 8192)
+        return nullptr;
+    const std::size_t rowBytes = (std::size_t(w) * bpp / 8 + 3) & ~std::size_t(3);
     if (offset + rowBytes * h > b.size()) return nullptr;
+    std::uint32_t colors = u32(46);
+    if (bpp == 8 && colors == 0) colors = 256;
+    const std::uint8_t* palette = b.data() + 14 + headerSize;
+    if (bpp == 8 && 14 + headerSize + colors * 4 > b.size()) return nullptr;
     cGZBuffer* buffer = NewBuffer(w, h);
     auto* bits = static_cast<std::uint8_t*>(buffer->GetColorSurfaceBits());
     const std::uint32_t stride = buffer->GetColorSurfaceStride();
     for (std::uint32_t y = 0; y < h; ++y) {
         const std::uint8_t* src = &b[offset + rowBytes * (rawH < 0 ? y : h - 1 - y)];
         std::uint8_t* dst = bits + std::size_t(y) * stride;
-        for (std::uint32_t x = 0; x < w; ++x, src += bpp / 8, dst += 4) {
-            dst[0] = src[0]; dst[1] = src[1]; dst[2] = src[2]; dst[3] = 0xff;
+        for (std::uint32_t x = 0; x < w; ++x, dst += 4) {
+            if (bpp == 8) {
+                const std::uint32_t idx = src[x] < colors ? src[x] : 0;
+                dst[0] = palette[idx * 4 + 0];
+                dst[1] = palette[idx * 4 + 1];
+                dst[2] = palette[idx * 4 + 2];
+                dst[3] = 0xff;
+            } else {
+                const std::uint8_t* px = src + std::size_t(x) * (bpp / 8);
+                dst[0] = px[0]; dst[1] = px[1]; dst[2] = px[2]; dst[3] = 0xff;
+            }
         }
     }
     buffer->SetTransparency(buffer->ConvertRGBValueToNative(0xff, 0, 0xff));
@@ -829,6 +843,25 @@ bool Boot() {
             if (sc4::cSC4View3DWin* view = gAppWindow->View3D()) native::SetCityRenderTarget(*view, gDriver.get(), static_cast<gz::cIGZDrawContext*>(gGraphics->Primary()->GetDrawContext()), gW, gH);
         }, [] { if (gAppWindow) gAppWindow->CreateRegionScreen(); }});
         screen.loadCity = [app](const std::string& path, cRZAutoRefCount<cISC4RegionalCity>* holder) { return native::LoadCityFile(*app, path, holder); };
+        screen.newCity = [app](cRZAutoRefCount<cISC4RegionalCity>* holder, bool headless) { return native::NewCityFile(*app, holder, headless); };
+        screen.pickHeightFieldFile = [](std::string& outPath) {
+            outPath.clear();
+            const char* cmds[] = {
+                "zenity --file-selection --title=\"Select Region Heightmap\" --file-filter=\"Heightmap images | *.bmp *.png *.BMP *.PNG\" 2>/dev/null",
+                "kdialog --getopenfilename . \"*.bmp *.png|Heightmap images\" 2>/dev/null",
+            };
+            for (const char* cmd : cmds) {
+                FILE* pipe = ::popen(cmd, "r");
+                if (!pipe) continue;
+                char buf[4096] = {};
+                if (std::fgets(buf, sizeof buf, pipe)) outPath = buf;
+                const int rc = ::pclose(pipe);
+                while (!outPath.empty() && (outPath.back() == '\n' || outPath.back() == '\r')) outPath.pop_back();
+                if (rc == 0 && !outPath.empty()) return true;
+                outPath.clear();
+            }
+            return false;
+        };
         native::InstallRegionScreenHost(screen);
         native::InstallRegionExtras(gDriver.get(), []() -> std::uint8_t* { return native::BootApplication() ? native::BootApplication()->GetPreferences() : nullptr; });
         if (std::uint8_t* preferences = app->GetPreferences()) {   // the game's defaults: clouds over the region map, scrolling at the screen edges

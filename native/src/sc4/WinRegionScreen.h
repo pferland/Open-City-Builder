@@ -363,6 +363,17 @@ public:
     virtual void RunGraphicOptionsDialog() {}
     // RZ::LM()->vslot 0x128(0)->vslot 0x90 (value, out): the localised number text.
     virtual void FormatNumber(int value, cRZString& out) = 0;
+
+    // --- new region and whole-region heightmap builder hooks (defaults preserve test mocks)
+    virtual int CreateNewRegion(const std::string& /*name*/, std::uint32_t /*baseTerrainType*/) { return -1; }
+    virtual void ShowRegionMessage(std::uint32_t /*group*/, std::uint32_t /*titleInstance*/, std::uint32_t /*bodyInstance*/) {}
+    virtual void ShowRegionErrorDialog(const std::string& /*title*/, const std::string& /*message*/) {}
+    virtual bool PickHeightFieldFile(cRZString& /*outPath*/) { return false; }
+    virtual bool LoadHeightFieldGrayscale(const cRZString& /*path*/, std::uint32_t& /*outWidth*/, std::uint32_t& /*outHeight*/,
+                                          std::vector<std::uint8_t>& /*outGray*/) { return false; }
+    virtual bool DeleteRegionalCity(RegionCityRef* /*city*/) { return false; }
+    virtual bool BuildCityFromHeightMap(const RegionViewCity& /*city*/, const std::uint8_t* /*grayPixels*/,
+                                        std::uint32_t /*width*/, std::uint32_t /*height*/) { return false; }
 };
 IRegionScreenHost* RegionScreenHost();
 void SetRegionScreenHost(IRegionScreenHost* host);

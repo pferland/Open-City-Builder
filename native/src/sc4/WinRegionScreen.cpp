@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <limits>
 #include <set>
@@ -784,12 +785,55 @@ void cSC4WinRegionScreen::SetCitySnapshotsToDefault(RegionViewCity& city) {   //
     }
 }
 
-void cSC4WinRegionScreen::MakeWholeRegion() {   // @ 0x10023a66c (PARTIAL)
-    // PARTIAL: the 1855-byte function opens cSC4WinLoadHeightField, validates the chosen bitmap against the region
-    // size (^64 cells + 1) and then copies it cell by cell into a fresh cISC4RegionalCity per city. It needs
-    // cSC4WinLoadHeightField's location saver / file browser wiring and the regional-city image API (vslots
-    // 0x800/0x8080/0xc0), which are not recovered.
-    SC4_UNWIRED("cSC4WinRegionScreen::MakeWholeRegion: build the region from a height-field bitmap not ported");
+void cSC4WinRegionScreen::MakeWholeRegion() {   // @ 0x10023a66c
+    IRegionScreenHost* host = RegionScreenHost();
+    if (!host) return;
+    cRZString path;
+    if (!host->PickHeightFieldFile(path) || path.Strlen() == 0) return;
+
+    std::uint32_t imgW = 0, imgH = 0;
+    std::vector<std::uint8_t> gray;
+    if (!host->LoadHeightFieldGrayscale(path, imgW, imgH, gray) || imgW == 0 || imgH == 0 ||
+        gray.size() < static_cast<std::size_t>(imgW) * imgH) {
+        return;
+    }
+
+    std::uint32_t maxX = 0, maxZ = 0;
+    for (const RegionViewCity& city : cities_) {
+        const std::uint32_t edge = 1u << (city.size & 0x1fu);
+        maxX = std::max(maxX, static_cast<std::uint32_t>(city.x) + edge);
+        maxZ = std::max(maxZ, static_cast<std::uint32_t>(city.z) + edge);
+    }
+    const std::uint32_t expectedW = (maxX << 6) + 1;
+    const std::uint32_t expectedH = (maxZ << 6) + 1;
+    if (imgW != expectedW || imgH != expectedH) {
+        char msg[256];
+        std::snprintf(msg, sizeof msg, "Region bitmap size is incorrect -- %ux%u, should be %ux%u", imgW, imgH, expectedW,
+                      expectedH);
+        host->ShowRegionErrorDialog("Region generation error", msg);
+        return;
+    }
+
+    for (const RegionViewCity& city : cities_) {
+        if (RegionCityRef* existing = host->FindCity(city.x, city.z)) {
+            host->DeleteRegionalCity(existing);
+        }
+    }
+
+    for (const RegionViewCity& city : cities_) {
+        const std::uint32_t shift = 2u - std::min<std::uint32_t>(city.size, 2u);
+        const std::uint32_t tileSize = 0x100u >> shift;
+        const std::uint32_t srcX = static_cast<std::uint32_t>(city.x) << 6;
+        const std::uint32_t srcZ = static_cast<std::uint32_t>(city.z) << 6;
+        std::vector<std::uint8_t> sub(static_cast<std::size_t>(tileSize) * tileSize, 0);
+        for (std::uint32_t y = 0; y < tileSize; ++y) {
+            std::memcpy(&sub[static_cast<std::size_t>(y) * tileSize], &gray[static_cast<std::size_t>(srcZ + y) * imgW + srcX],
+                        tileSize);
+        }
+        host->BuildCityFromHeightMap(city, sub.data(), tileSize, tileSize);
+    }
+
+    host->ReloadRegion();
 }
 
 // ===================================================================================================================
@@ -1262,10 +1306,28 @@ bool cSC4WinRegionScreen::GZOnCommand(std::uint32_t command, std::uint64_t param
         }
         return true;
     }
-    case 0x2a5b0000:   // new region: cSC4NewRegionDialog is not ported yet
-        SC4_UNWIRED("cSC4WinRegionScreen::GZOnCommand: the new-region dialog (cSC4NewRegionDialog) not ported");
-        if (getenv("SC4_DEBUG")) fprintf(stderr, "region screen: the new-region dialog is not ported yet\n");
+    case 0x2a5b0000: {   // new region: display cSC4NewRegionDialog and switch to the created region
+        if (!host) return true;
+        NewRegionDialogHost dialogHost;
+        for (int i = 0; i < host->RegionCount(); ++i)
+            dialogHost.existingNames.push_back(host->RegionNameAt(i) ? host->RegionNameAt(i) : "");
+        bool created = false;
+        dialogHost.createRegion = [host, &created](const std::string& name, std::uint32_t baseTerrainType) {
+            const int createdIdx = host->CreateNewRegion(name, baseTerrainType);
+            created = createdIdx >= 0;
+            return createdIdx;
+        };
+        dialogHost.showConflict = [host](cIGZWin*, std::uint32_t group, std::uint32_t title, std::uint32_t body) {
+            host->ShowRegionMessage(group, title, body);
+        };
+        const int index = SC4DisplayNewRegionDialog(this, dialogHost);
+        if (getenv("SC4_DEBUG")) fprintf(stderr, "region screen: new region dialog -> %d\n", index);
+        if (!created || index < 0) return true;
+        host->SelectRegion(index);
+        SetUserPreferencesToCurrentRegion();
+        host->ReloadRegion();
         return true;
+    }
     case 0x0a5510a9:   // the options menu's game options button
         if (host) host->RunGameOptionsDialog();
         return true;

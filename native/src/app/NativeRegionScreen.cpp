@@ -13,8 +13,11 @@
 #include <memory>
 
 #include "app/NativeBoot.h"
+#include "app/NativeCity.h"
 #include "app/NativeUi.h"
 #include "dbpf/DBPFReader.h"
+#include "gz/Buffer.h"
+#include "rz/cRZFile.h"
 #include "lua/ISCLua.h"
 #include "gz/RZServices.h"
 #include "gz/WinCtrlMgr.h"
@@ -434,24 +437,48 @@ public:
         left = rect.x0; top = rect.z0; right = rect.x1; bottom = rect.z1;
         return true;
     }
-    int CitySnapshotSet() override { return 0; }
+    int CitySnapshotSet() override {
+        cISC4Region* region = ActiveRegion();
+        return region ? static_cast<int>(region->GetBaseTerrainType()) : 0;
+    }
     void CityLocations(std::vector<cISC4Region::cLocation>& out) override {
         if (cISC4Region* region = ActiveRegion()) region->GetCityLocations(out);
     }
     RegionCityRef* FindCity(int x, int z) override { CityAdapter* adapter = CityAt(x, z); return adapter ? adapter->Ref() : nullptr; }
-    RegionCityRef* FindOrCreateCity(const RegionViewCity& city, bool) override { return FindCity(city.x, city.z); }
+    RegionCityRef* FindOrCreateCity(const RegionViewCity& city, bool create) override {
+        if (RegionCityRef* existing = FindCity(city.x, city.z)) return existing;
+        if (!create) return nullptr;
+        cISC4Region* region = ActiveRegion();
+        if (!region) return nullptr;
+        auto* rc = new cSC4RegionalCity();
+        rc->AddRef();
+        rc->Init();
+        const int edge = 1 << (city.size & 0x1fu);
+        rc->SetCitySize(edge, edge);
+        rc->SetPosition(city.x, city.z, false);
+        cRZString defaultName("New City");
+        LoadLocalizedString(0x6a231eaa, 0xaa738c4e, defaultName);
+        rc->SetCityName(defaultName);
+        region->InsertCity(rc);
+        rc->Release();
+        return FindCity(city.x, city.z);
+    }
     bool LaunchRegionCityByName(const cRZString&, RegionCityRef*) override { return false; }
     void ClearRegionViewSlot() override {}
     std::uint32_t LaunchCityFromRegion(RegionCityRef* ref) override {
         auto* adapter = ref ? dynamic_cast<CityAdapter*>(ref->get()) : nullptr;
         if (std::getenv("SC4_DEBUG")) std::fprintf(stderr, "launch city adapter=%p\n", (void*)adapter);
-        if (!adapter || !g_services.loadCity) return 0;
+        if (!adapter) return 0;
         const std::string path = adapter->SavePath();
         if (std::getenv("SC4_DEBUG")) std::fprintf(stderr, "launch city path \"%s\"\n", path.c_str());
         int x = 0, z = 0;
         adapter->GetPosition(x, z);
         cISC4Region* region = ActiveRegion();
-        return !path.empty() && g_services.loadCity(path, region ? region->GetCity(x, z) : nullptr) ? 1 : 0;
+        cRZAutoRefCount<cISC4RegionalCity>* holder = region ? region->GetCity(x, z) : nullptr;
+        if (!path.empty() && cRZFile::FileExists(cRZString(path.c_str()))) {
+            return g_services.loadCity && g_services.loadCity(path, holder) ? 1u : 0u;
+        }
+        return g_services.newCity && g_services.newCity(holder, false) ? 1u : 0u;
     }
     void QuitToRegionSelect(bool) override {}
 
@@ -528,6 +555,76 @@ public:
         std::string digits = std::to_string(value < 0 ? -value : value);
         for (int i = int(digits.size()) - 3; i > 0; i -= 3) digits.insert(std::size_t(i), ",");
         out = cRZString(((value < 0 ? "-" : "") + digits).c_str());
+    }
+    int CreateNewRegion(const std::string& name, std::uint32_t baseTerrainType) override {
+        cISC4Nation* nation = Nation();
+        if (!nation || name.empty()) return -1;
+        const std::uint32_t index = nation->AddNewRegion(cRZString(name.c_str()));
+        cISC4Region* region = nation->GetRegion(index);
+        if (!region) return -1;
+        region->Init();
+        region->SetBaseTerrainType(baseTerrainType == 1 ? cISC4Region::kBaseTerrainType1 : cISC4Region::kBaseTerrainType0);
+        region->Shutdown();
+        return static_cast<int>(index);
+    }
+    void ShowRegionMessage(std::uint32_t group, std::uint32_t titleInstance, std::uint32_t bodyInstance) override {
+        cRZString title, body;
+        LoadLocalizedString(group, titleInstance, title);
+        LoadLocalizedString(group, bodyInstance, body);
+        ShowRegionErrorDialog(title.Strlen() ? title.ToChar() : "Error", body.Strlen() ? body.ToChar() : "");
+    }
+    void ShowRegionErrorDialog(const std::string& title, const std::string& message) override {
+        std::fprintf(stderr, "region dialog: %s - %s\n", title.c_str(), message.c_str());
+        if (RZ::WM() && nSC4UI::Host() && nSC4UI::Host()->PopupModalDialogsEnabled()) {
+            nSC4UI::GenericNotificationDialog(cRZString(title.c_str()), cRZString(message.c_str()));
+        }
+    }
+    bool PickHeightFieldFile(cRZString& outPath) override {
+        if (const char* env = std::getenv("SC4_HEIGHTMAP_FILE"); env && *env) {
+            outPath = cRZString(env);
+            return true;
+        }
+        std::string picked;
+        if (!g_services.pickHeightFieldFile || !g_services.pickHeightFieldFile(picked) || picked.empty()) return false;
+        outPath = cRZString(picked.c_str());
+        return true;
+    }
+    bool LoadHeightFieldGrayscale(const cRZString& path, std::uint32_t& outWidth, std::uint32_t& outHeight,
+                                  std::vector<std::uint8_t>& outGray) override {
+        return native::LoadGrayscaleHeightFile(path.ToChar(), outWidth, outHeight, outGray);
+    }
+    bool DeleteRegionalCity(RegionCityRef* ref) override {
+        auto* adapter = ref ? dynamic_cast<CityAdapter*>(ref->get()) : nullptr;
+        cISC4Region* region = ActiveRegion();
+        if (!adapter || !region) return false;
+        int x = 0, z = 0;
+        adapter->GetPosition(x, z);
+        cRZAutoRefCount<cISC4RegionalCity>* holder = region->GetCity(x, z);
+        if (!holder || !holder->get()) return false;
+        cISC4RegionalCity* rc = holder->get();
+        g_adapters.erase(rc);
+        region->DeleteCity(holder);
+        return true;
+    }
+    bool BuildCityFromHeightMap(const RegionViewCity& city, const std::uint8_t* grayPixels,
+                                std::uint32_t width, std::uint32_t height) override {
+        cSC4App* app = g_services.app;
+        cISC4Region* region = ActiveRegion();
+        if (!app || !region || !g_services.newCity || !grayPixels || width == 0 || height == 0) return false;
+        native::SetNewCityHeightImage(grayPixels, width, height);
+        FindOrCreateCity(city, true);
+        cRZAutoRefCount<cISC4RegionalCity>* holder = region->GetCity(city.x, city.z);
+        const bool created = holder && g_services.newCity(holder, true);
+        native::ClearNewCityHeightImage();
+        if (!created) return false;
+        cRZString savePath;
+        if (cISC4City* c = app->GetCity()) c->GetCitySaveFilePath(savePath);
+        const bool saved = savePath.Strlen() != 0 && app->SaveCity(savePath, false);
+        app->CloseCity();
+        if (SL::spMS2) {
+            for (int i = 0; i < 16 && SL::spMS2->GetMessageQueueSize() != 0; ++i) SL::spMS2->OnTick(0);
+        }
+        return saved;
     }
 
 private:

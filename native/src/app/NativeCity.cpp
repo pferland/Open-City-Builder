@@ -37,6 +37,8 @@
 #include "app/NativeDemolition.h"
 #include <list>
 #include "sc4/cSC4City.h"
+#include "sc4/Nation.h"
+#include "sc4/Region.h"
 #include "sc4/Simulator.h"
 #include "rz/cRZFile.h"
 #include "rz/cRZMessage2Standard.h"
@@ -261,53 +263,67 @@ public:
 } g_citySave;
 }  // namespace
 
-bool LoadCityFile(cSC4App& app, const std::string& path, cRZAutoRefCount<cISC4RegionalCity>* holder) {
-    static CityHost cityHost;
-    static Factory factory;
+namespace {
+static CityHost g_cityHost;
+static Factory g_factory;
+}  // namespace
+
+void EnsureCityHooksInstalled(cSC4App& app) {
     static bool installed = false;
-    if (!installed) {
-        installed = true;
-        sc4::SetSerializableFactory(&factory);
-        g_serFactory = &factory;
-        g_missingClasses = &factory.missing;
-        auto& hooks = app.CityHooks();
-        hooks.createCity = []() -> cISC4City* { auto* city = new sc4::cSC4City(&cityHost); city->AddRef(); g_hostCity = city; SetTerrainHostCity(city); return city; };
-        hooks.createCitySegment = []() -> cIGZPersistDBSegment* {
-            auto* segment = new sc4::cSC4DBSegment();
-            segment->AddRef();
-            return segment->AsIGZPersistDBSegment();
-        };
-        hooks.readLoadSaveVersion = [](cIGZPersistDBSegment* segment) { return sc4::SC4ReadAppLoadSaveVersion(segment); };
-        hooks.writeLoadSaveVersion = [](cIGZPersistDBSegment* segment) { return sc4::SC4WriteAppLoadSaveVersion(segment); };
-        hooks.writeRegionalCity = [](cIGZPersistDBSegment* segment, cISC4RegionalCity* city) { return sc4::SC4WriteRegionalCity(segment, city); };
-        // SaveCity's last step (i386 SaveCity: SL::spNeighborsSim vslot 0x50 GetAdjacentCities(list, true), then each city's
-        // SC4WriteRegionalCity(path, city)): the neighbors' records, with the connection changes queued for them, go into their files.
-        hooks.connectedCities = [](std::vector<cISC4RegionalCity*>& out) {
-            out.clear();
-            sc4::cSC4NeighborsSimulator* neighbors = native::CityNeighborsSimulator();
-            if (!neighbors) return;
-            std::list<cRZAutoRefCount<cISC4RegionalCity>> cities;
-            neighbors->GetAdjacentCities(cities, true);
-            for (auto& city : cities) if (city.get()) out.push_back(city.get());   // the region keeps them alive
-        };
-        hooks.writeRegionalCityFile = [](const cRZString& path, cISC4RegionalCity* city) {
-            const bool ok = sc4::SC4WriteRegionalCity(path, city);
-            if (std::getenv("SC4_DEBUG")) std::printf("save: neighbor record %s %s\n", path.ToChar(), ok ? "written" : "FAILED");
-            return ok;
-        };
-        hooks.readRegionalCity = [](cIGZPersistDBSegment* segment, cRZAutoRefCount<cISC4RegionalCity>& out) { return sc4::SC4ReadRegionalCity(segment, out); };
-        // SC4CreateSavePathForCity (0x1001e98a4 -> 0x1001e9aa9): "City - <name>.sc4", sanitised, resolved in the current region's
-        // directory (natively the directory the open city was read from), " (n)" appended while another city's file holds the name.
-        hooks.createSavePathForCity = [](const cRZString& cityName, std::uint32_t, cRZString& out) {
-            out = cRZString("");
-            cRZString current;
-            if (g_hostCity) g_hostCity->GetCitySaveFilePath(current);
-            const std::string currentPath = current.ToChar();
-            const std::size_t slash = currentPath.rfind('/');
-            if (slash == std::string::npos) { out = current; return; }   // no directory known: the file it came from
-            const std::string directory = currentPath.substr(0, slash + 1);
-            // The city's own file already carries its name ("City - <name>.sc4" or "City - <name> (n).sc4"): it is kept.
-            // Only a renamed city moves to a new file.
+    if (installed) return;
+    installed = true;
+    sc4::SetSerializableFactory(&g_factory);
+    g_serFactory = &g_factory;
+    g_missingClasses = &g_factory.missing;
+    auto& hooks = app.CityHooks();
+    hooks.createCity = []() -> cISC4City* { auto* city = new sc4::cSC4City(&g_cityHost); city->AddRef(); g_hostCity = city; SetTerrainHostCity(city); return city; };
+    hooks.createCitySegment = []() -> cIGZPersistDBSegment* {
+        auto* segment = new sc4::cSC4DBSegment();
+        segment->AddRef();
+        return segment->AsIGZPersistDBSegment();
+    };
+    hooks.readLoadSaveVersion = [](cIGZPersistDBSegment* segment) { return sc4::SC4ReadAppLoadSaveVersion(segment); };
+    hooks.writeLoadSaveVersion = [](cIGZPersistDBSegment* segment) { return sc4::SC4WriteAppLoadSaveVersion(segment); };
+    hooks.writeRegionalCity = [](cIGZPersistDBSegment* segment, cISC4RegionalCity* city) { return sc4::SC4WriteRegionalCity(segment, city); };
+    // SaveCity's last step (i386 SaveCity: SL::spNeighborsSim vslot 0x50 GetAdjacentCities(list, true), then each city's
+    // SC4WriteRegionalCity(path, city)): the neighbors' records, with the connection changes queued for them, go into their files.
+    hooks.connectedCities = [](std::vector<cISC4RegionalCity*>& out) {
+        out.clear();
+        sc4::cSC4NeighborsSimulator* neighbors = native::CityNeighborsSimulator();
+        if (!neighbors) return;
+        std::list<cRZAutoRefCount<cISC4RegionalCity>> cities;
+        neighbors->GetAdjacentCities(cities, true);
+        for (auto& city : cities) if (city.get()) out.push_back(city.get());   // the region keeps them alive
+    };
+    hooks.writeRegionalCityFile = [](const cRZString& path, cISC4RegionalCity* city) {
+        const bool ok = sc4::SC4WriteRegionalCity(path, city);
+        if (std::getenv("SC4_DEBUG")) std::printf("save: neighbor record %s %s\n", path.ToChar(), ok ? "written" : "FAILED");
+        return ok;
+    };
+    hooks.readRegionalCity = [](cIGZPersistDBSegment* segment, cRZAutoRefCount<cISC4RegionalCity>& out) { return sc4::SC4ReadRegionalCity(segment, out); };
+    // SC4CreateSavePathForCity (0x1001e98a4 -> 0x1001e9aa9): "City - <name>.sc4", sanitised, resolved in the current region's
+    // directory (natively the directory the open city was read from), " (n)" appended while another city's file holds the name.
+    hooks.createSavePathForCity = [](const cRZString& cityName, std::uint32_t, cRZString& out) {
+        out = cRZString("");
+        cRZString current;
+        if (g_hostCity) g_hostCity->GetCitySaveFilePath(current);
+        std::string currentPath = current.ToChar();
+        std::size_t slash = currentPath.rfind('/');
+        std::string directory;
+        if (slash != std::string::npos) {
+            directory = currentPath.substr(0, slash + 1);
+        } else if (cSC4App* bootApp = BootApplication()) {
+            if (cISC4Region* region = bootApp->GetNation() ? bootApp->GetNation()->GetActiveRegion() : nullptr) {
+                if (cIGZString* dirName = region->GetDirectoryName(); dirName && dirName->Strlen() != 0) {
+                    directory = std::string(cSC4Nation::msRegionDirectory.ToChar()) + dirName->ToChar();
+                    if (!directory.empty() && directory.back() != '/') directory.push_back('/');
+                }
+            }
+        }
+        if (directory.empty()) { out = current; return; }
+        // The city's own file already carries its name ("City - <name>.sc4" or "City - <name> (n).sc4"): it is kept.
+        // Only a renamed city moves to a new file.
+        if (slash != std::string::npos) {
             cRZString ownName;
             sc4::SC4SanitizeFileName(cRZString((std::string("City - ") + cityName.ToChar()).c_str()), ownName);
             const std::string stem = ownName.ToChar(), file = currentPath.substr(slash + 1);
@@ -317,43 +333,76 @@ bool LoadCityFile(cSC4App& app, const std::string& path, cRZAutoRefCount<cISC4Re
                                       rest.find_first_not_of("0123456789", 2) == rest.size() - 1;
                 if (rest.empty() || numbered) { out = current; return; }
             }
-            for (unsigned copy = 1;; ++copy) {
-                std::string name = std::string("City - ") + cityName.ToChar();
-                if (copy > 1) name += " (" + std::to_string(copy) + ")";
-                name += ".sc4";
-                cRZString sanitized;
-                sc4::SC4SanitizeFileName(cRZString(name.c_str()), sanitized);
-                const std::string candidate = directory + sanitized.ToChar();
-                if (candidate == currentPath || !std::filesystem::exists(candidate)) { out = cRZString(candidate.c_str()); return; }
+        }
+        for (unsigned copy = 1;; ++copy) {
+            std::string name = std::string("City - ") + cityName.ToChar();
+            if (copy > 1) name += " (" + std::to_string(copy) + ")";
+            name += ".sc4";
+            cRZString sanitized;
+            sc4::SC4SanitizeFileName(cRZString(name.c_str()), sanitized);
+            const std::string candidate = directory + sanitized.ToChar();
+            if (candidate == currentPath || !std::filesystem::exists(candidate)) { out = cRZString(candidate.c_str()); return; }
+        }
+    };
+    hooks.notify = [](const std::string& title, const std::string& text) { std::printf("notify: %s - %s\n", title.c_str(), text.c_str()); };
+    hooks.loadText = [](std::uint32_t group, std::uint32_t instance) {
+        cRZString text;
+        return LoadLocalizedString(group, instance, text) ? std::string(text.ToChar()) : std::string();
+    };
+    hooks.busy = [](bool) {};
+    hooks.flushGraphics = [] {};
+    hooks.destroyCurrentScreen = [] { if (g_screens.destroyCurrentScreen) g_screens.destroyCurrentScreen(); };
+    hooks.createCityScreen = [] { if (g_screens.createCityScreen) g_screens.createCityScreen(); };
+    hooks.createRegionScreen = [] { if (g_screens.createRegionScreen) g_screens.createRegionScreen(); };
+    static bool subscribed = false;
+    if (std::getenv("SC4_DEBUG")) std::printf("save: message server %p\n", static_cast<void*>(SL::spMS2));
+    if (!subscribed && SL::spMS2) subscribed = SL::spMS2->AddNotification(&g_citySave, kMessageSaveStarted);
+    RegisterExemplarFactories();
+    InstallStubHosts();
+    InstallAdvisorHosts();              // the advisor system, advisors, advices and the scripts' advice API
+    InstallCityProbeBindings();
+    InstallNativeSimHosts();            // land value (more simulators move off the probe bindings here)
+    InstallLotConstructionHosts();      // the lot developer's terrain host and construction services
+    InstallPropHosts();                 // the prop catalogue and the props' occupant manager
+    InstallBuildingDevelopmentHost();   // the real hosts replace the generated stubs before the components Init
+    InstallGrowthDeveloperHost();
+    InstallTractDeveloperHost();
+    InstallDemandSimulatorHost();
+    InstallLotConfigurationHosts();
+    InstallMiniMapHost();               // the corner minimap's terrain, zones, networks and camera
+}
+
+bool NewCityFile(cSC4App& app, cRZAutoRefCount<cISC4RegionalCity>* holder, bool headless) {
+    EnsureCityHooksInstalled(app);
+    ForgetLotSerializables();
+    struct ScreenGuard {
+        sc4::AppCityHooks& hooks;
+        bool active;
+        std::function<void()> savedDestroy, savedCreateCity, savedCreateRegion;
+        ScreenGuard(sc4::AppCityHooks& h, bool on)
+            : hooks(h), active(on), savedDestroy(h.destroyCurrentScreen), savedCreateCity(h.createCityScreen), savedCreateRegion(h.createRegionScreen) {
+            if (active) {
+                hooks.destroyCurrentScreen = nullptr;
+                hooks.createCityScreen = nullptr;
+                hooks.createRegionScreen = nullptr;
             }
-        };
-        hooks.notify = [](const std::string& title, const std::string& text) { std::printf("notify: %s - %s\n", title.c_str(), text.c_str()); };
-        hooks.loadText = [](std::uint32_t group, std::uint32_t instance) {
-            cRZString text;
-            return LoadLocalizedString(group, instance, text) ? std::string(text.ToChar()) : std::string();
-        };
-        hooks.busy = [](bool) {};
-        hooks.flushGraphics = [] {};
-        hooks.destroyCurrentScreen = [] { if (g_screens.destroyCurrentScreen) g_screens.destroyCurrentScreen(); };
-        hooks.createCityScreen = [] { if (g_screens.createCityScreen) g_screens.createCityScreen(); };
-        hooks.createRegionScreen = [] { if (g_screens.createRegionScreen) g_screens.createRegionScreen(); };
-        static bool subscribed = false;
-        if (std::getenv("SC4_DEBUG")) std::printf("save: message server %p\n", static_cast<void*>(SL::spMS2));
-        if (!subscribed && SL::spMS2) subscribed = SL::spMS2->AddNotification(&g_citySave, kMessageSaveStarted);
-        RegisterExemplarFactories();
-        InstallStubHosts();
-        InstallAdvisorHosts();              // the advisor system, advisors, advices and the scripts' advice API
-        InstallCityProbeBindings();
-        InstallNativeSimHosts();            // land value (more simulators move off the probe bindings here)
-        InstallLotConstructionHosts();      // the lot developer's terrain host and construction services
-        InstallPropHosts();                 // the prop catalogue and the props' occupant manager
-        InstallBuildingDevelopmentHost();   // the real hosts replace the generated stubs before the components Init
-        InstallGrowthDeveloperHost();
-        InstallTractDeveloperHost();
-        InstallDemandSimulatorHost();
-        InstallLotConfigurationHosts();
-        InstallMiniMapHost();               // the corner minimap's terrain, zones, networks and camera
-    }
+        }
+        ~ScreenGuard() {
+            if (active) {
+                hooks.destroyCurrentScreen = std::move(savedDestroy);
+                hooks.createCityScreen = std::move(savedCreateCity);
+                hooks.createRegionScreen = std::move(savedCreateRegion);
+            }
+        }
+    } guard(app.CityHooks(), headless);
+    const bool created = app.RequestNewCity(holder);
+    if (created && !headless) WeatherPostCityInit();
+    std::printf("city: new city %s\n", created ? "created" : "FAILED");
+    return created;
+}
+
+bool LoadCityFile(cSC4App& app, const std::string& path, cRZAutoRefCount<cISC4RegionalCity>* holder) {
+    EnsureCityHooksInstalled(app);
     ForgetLotSerializables();
     const bool loaded = app.LoadCity(cRZString(path.c_str()), holder);
     // the weather simulator's catch-up ran on the city's "init done" message (0x26d31ec1) during the load: report it
@@ -379,7 +428,7 @@ bool LoadCityFile(cSC4App& app, const std::string& path, cRZAutoRefCount<cISC4Re
             return reloaded;
         }
     }
-    std::printf("city: %s %s (%zu classes missing)\n", path.c_str(), loaded ? "loaded" : "FAILED", factory.missing.size());
+    std::printf("city: %s %s (%zu classes missing)\n", path.c_str(), loaded ? "loaded" : "FAILED", g_factory.missing.size());
     return loaded;
 }
 

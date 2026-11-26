@@ -239,6 +239,7 @@ public:
     // --- cISC4App accessors
     void GetAppName(cIGZString& out) const override;               // @ 0x1000122b2
     cISC4City* GetCity() const override { return city_; }          // @ 0x10001231a
+    cISC4RegionalCity* CurrentRegionalCity() const { return regionalCity_ ? regionalCity_->get() : nullptr; }
     SL::IWinSC4App* WinSC4App() const override { return winSC4App_; }
     void SetWinSC4App(SL::IWinSC4App* window) { winSC4App_ = window; }
     std::uint8_t* GetPreferences() const override { return const_cast<sc4::SC4Preferences*>(&preferences_)->data(); }   // @ 0x100012336

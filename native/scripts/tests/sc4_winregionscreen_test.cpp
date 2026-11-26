@@ -19,6 +19,9 @@
 #include <SDL.h>
 
 #include "fake_winmgr2.h"
+#include "gz/WinBtn.h"
+#include "gz/WinTextEdit.h"
+#include "sc4/RegionDialogs.h"
 #include "sc4/WinRegionScreen.h"
 
 static int failures = 0;
@@ -58,6 +61,158 @@ struct FakeCity final : IRegionalCity {
     bool IsOccupied() override { return occupied; }
     void GetSize(int& x, int& z) override { x = cellsX; z = cellsZ; }
     void GetName(cRZString& out) override { out.AssignFromCString(name.c_str()); }
+};
+
+struct FakeTextEditWin final : cGZWin, public gz::cIGZWinTextEdit {
+    explicit FakeTextEditWin(cIGZWinMgr* mgr) : cGZWin(mgr) {}
+    std::uint32_t maxLen = 0, teFlags = 0, selStart = 0, selEnd = 0;
+    bool QueryInterface(std::uint32_t iid, void** out) override {
+        if (iid == gz::kGZIID_cIGZWinTextEdit) { *out = static_cast<gz::cIGZWinTextEdit*>(this); AddRef(); return true; }
+        return cGZWin::QueryInterface(iid, out);
+    }
+    std::uint32_t AddRef() override { return cGZWin::AddRef(); }
+    std::uint32_t Release() override { return cGZWin::Release(); }
+    bool Init() override { return cGZWin::Init(); }
+    bool Shutdown() override { return cGZWin::Shutdown(); }
+    cIGZWin* AsIGZWin() override { return this; }
+    void SetArea(int l, int t, int r, int b) override { cGZWin::SetArea(l, t, r, b); }
+    void GetTextArea(cRZRect& out) override { out = area_; }
+    cIGZFont* GetFont() const override { return nullptr; }
+    void SetFont(cIGZFont*) override {}
+    bool SetFontStyle(std::uint32_t) override { return true; }
+    bool GetFontStyle(std::uint32_t&) override { return false; }
+    bool SetFontColor(std::uint32_t) override { return true; }
+    bool SetFontColor(ColorIndex, std::uint32_t) override { return true; }
+    bool GetFontColor(ColorIndex, std::uint32_t&) const override { return false; }
+    bool SetColor(ColorIndex, std::uint32_t) override { return true; }
+    bool GetColor(ColorIndex, std::uint32_t&) const override { return false; }
+    bool ClearFontColor(ColorIndex) override { return true; }
+    void SetCaretColor(std::uint32_t) override {}
+    bool GetCaretColor(std::uint32_t&) const override { return false; }
+    void SetFillColor(std::uint32_t) override {}
+    std::uint32_t GetHighlightFillColor() override { return 0; }
+    void SetHighlightFillColor(std::uint32_t) override {}
+    void GetBackgroundImage(cIGZBuffer*&, bool&) override {}
+    void SetBackgroundImage(cIGZBuffer*, bool) override {}
+    bool ScrollLineUp() override { return false; }
+    bool ScrollLineDown() override { return false; }
+    bool ScrollToStart() override { return false; }
+    bool ScrollToEnd() override { return false; }
+    bool ScrollPageUp() override { return false; }
+    bool ScrollPageDown() override { return false; }
+    std::uint32_t GetMaximumTextToAllow() override { return maxLen; }
+    void SetMaximumTextToAllow(std::uint32_t m) override { maxLen = m; }
+    std::uint32_t GetFirstVisibleLine() override { return 0; }
+    std::uint32_t GetLineCount() override { return 1; }
+    std::uint32_t GetLineHeight() override { return 12; }
+    void SetOutlineUse(bool, std::uint32_t) override {}
+    void GetOutlineUse(bool&, std::uint32_t&) const override {}
+    std::uint32_t GetTextGutterX() override { return 0; }
+    void SetTextGutterX(std::uint32_t) override {}
+    std::uint32_t GetTextGutterY() override { return 0; }
+    void SetTextGutterY(std::uint32_t) override {}
+    bool ResizeWindowForExactLineHeights() override { return false; }
+    const char* GetText() override { return GetCaption().Data(); }
+    std::uint32_t GetTextLength() override { return GetCaption().Strlen(); }
+    void GetText(cIGZString& out) override { out.AssignFromIGZString(GetCaption()); }
+    void GetText(char*, std::uint32_t&) override {}
+    bool SetText(const char* t, std::uint32_t l, bool) override { cRZString s; s.AssignFromChars(t, l); SetCaption(s); return true; }
+    void SetText(const cIGZString& t, bool) override { SetCaption(t); }
+    std::uint32_t InsertText(const char*, std::uint32_t, std::uint32_t) override { return 0; }
+    void InsertText(const char*, std::uint32_t, std::uint32_t, std::uint32_t) override {}
+    bool RemoveChar(std::uint32_t, bool, cIGZString*) override { return false; }
+    std::uint32_t RemoveText(std::uint32_t, std::uint32_t, cIGZString*) override { return 0; }
+    void RemoveText(std::uint32_t, std::uint32_t, std::uint32_t, cIGZString*) override {}
+    void RemoveText(std::uint32_t, std::uint32_t, std::uint32_t, std::uint32_t, cIGZString*) override {}
+    std::uint32_t FindText(const char*, std::uint32_t, std::uint32_t, bool) override { return 0xffffffffu; }
+    void GetIndexFromPosition(std::uint32_t&, int, int) override {}
+    void GetColumnFromPosition(std::uint32_t, std::uint32_t&, int) override {}
+    void GetLineAndColumnFromPosition(std::uint32_t&, std::uint32_t&, int, int) override {}
+    void GetPositionFromLineAndColumn(std::uint32_t, std::uint32_t, int&, int&) override {}
+    void GetLineAndColumnFromIndex(std::uint32_t&, std::uint32_t&, std::uint32_t) override {}
+    bool GetIndexFromLineAndColumn(std::uint32_t, std::uint32_t, std::uint32_t&) override { return false; }
+    std::uint32_t GetCharacterCountOfLine(std::uint32_t) override { return 0; }
+    bool SetInsertMode(bool) override { return true; }
+    bool GetInsertMode() const override { return true; }
+    bool SetInsertionIndex(std::uint32_t) override { return true; }
+    bool GetInsertionIndex(std::uint32_t&) const override { return false; }
+    bool SetInsertionLineAndColumn(std::uint32_t, std::uint32_t) override { return true; }
+    bool GetInsertionLineAndColumn(std::uint32_t&, std::uint32_t&) const override { return false; }
+    void IncrementInsertionPosition(int) override {}
+    void IncrementInsertionPositionByWord(int) override {}
+    bool SetCaretPeriod(std::uint32_t) override { return true; }
+    bool GetCaretPeriod(std::uint32_t&) const override { return false; }
+    bool GetSelection(std::uint32_t& s, std::uint32_t& e) override { s = selStart; e = selEnd; return true; }
+    bool SetSelection(std::uint32_t s, std::uint32_t e) override { selStart = s; selEnd = e; return true; }
+    void SetFlag(std::uint32_t f) override { teFlags |= f; }
+    void SetFlags(std::uint32_t f) override { teFlags = f; }
+    void ClearFlag(std::uint32_t f) override { teFlags &= ~f; }
+    bool IsFlagSet(std::uint32_t f) override { return (teFlags & f) != 0; }
+    std::uint32_t GetFlags() override { return teFlags; }
+    void SetMaxUndoLevelCount(std::uint32_t) override {}
+    std::uint32_t GetMaxUndoLevelCount() const override { return 0; }
+    bool Undo() override { return false; }
+    bool Redo() override { return false; }
+    bool GetScrollBarImageVertical(cIGZBuffer*&, cRZRect&) const override { return false; }
+    bool GetScrollBarImageHorizontal(cIGZBuffer*&, cRZRect&) const override { return false; }
+    bool SetScrollBarImageVertical(cIGZBuffer*, const cRZRect&) override { return false; }
+    bool SetScrollBarImageHorizontal(cIGZBuffer*, const cRZRect&) override { return false; }
+    bool SetSoundID(int, int) override { return true; }
+};
+
+struct FakeBtnWin final : cGZWin, public gz::cIGZWinBtn {
+    explicit FakeBtnWin(cIGZWinMgr* mgr) : cGZWin(mgr) {}
+    bool checked = false;
+    bool QueryInterface(std::uint32_t iid, void** out) override {
+        if (iid == gz::kGZIID_cIGZWinBtn) { *out = static_cast<gz::cIGZWinBtn*>(this); AddRef(); return true; }
+        return cGZWin::QueryInterface(iid, out);
+    }
+    std::uint32_t AddRef() override { return cGZWin::AddRef(); }
+    std::uint32_t Release() override { return cGZWin::Release(); }
+    cIGZWin* AsIGZWin() override { return this; }
+    bool GetBtnFlag(int f) const override { return f == gz::kBtnOn && checked; }
+    bool SetBtnFlag(int f, bool on) override { if (f == gz::kBtnOn) checked = on; return true; }
+    bool ToggleOn() override { checked = true; return true; }
+    bool ToggleOff() override { checked = false; return true; }
+    bool IsOn() const override { return checked; }
+    bool SetChecked(bool c) override { checked = c; return true; }
+    bool IsChecked() const override { return checked; }
+    int GetStyle() override { return 0; }
+    bool SetStyle(int, cIGZBuffer*, const cRZRect*) override { return true; }
+    bool SetButtonStyle(int) override { return true; }
+    int GetImageW() const override { return 0; }
+    int GetImageH() const override { return 0; }
+    bool GetImageArea(cRZRect&) const override { return false; }
+    bool SetBuffer(cIGZBuffer*) override { return true; }
+    bool GetBuffer(cIGZBuffer*&) const override { return false; }
+    bool SetFont(gz::IWinButtonFont*) override { return true; }
+    bool SetFontStyle(std::uint32_t) override { return true; }
+    bool GetFontStyle(std::uint32_t&) override { return false; }
+    bool SetFontColor(int, std::uint32_t) override { return true; }
+    bool GetFontColor(int, std::uint32_t&) const override { return false; }
+    bool SetFontColor(int, gz::cRZColor) override { return true; }
+    bool GetFontColor(int, gz::cRZColor&) const override { return false; }
+    bool ClearFontColor(int) override { return true; }
+    bool SetCaptionStyle(int) override { return true; }
+    bool GetCaptionStyle(int&) const override { return false; }
+    bool SetGutters(std::uint8_t, std::uint8_t) override { return true; }
+    bool GetGutters(int&, int&) const override { return false; }
+    bool SetGutters(std::uint8_t, std::uint8_t, std::uint8_t, std::uint8_t) override { return true; }
+    bool GetGutters(int&, int&, int&, int&) const override { return false; }
+    bool FitSizeToContent() override { return true; }
+    bool GetMinMaxInfo(cRZRect&) override { return false; }
+    bool SetTipText(const cIGZString&) override { return true; }
+    bool GetTipText(cIGZString&) const override { return false; }
+    bool ClearTipText() override { return true; }
+    bool SetTipPlacementType(int) override { return true; }
+    bool GetTipPlacementType(int&) const override { return false; }
+    bool SetTipPlacementOffsets(int, int) override { return true; }
+    bool GetTipPlacementOffsets(int&, int&) const override { return false; }
+    bool SetTipColor(int, std::uint8_t, std::uint8_t, std::uint8_t) override { return true; }
+    bool GetTipColor(int, std::uint8_t&, std::uint8_t&, std::uint8_t&) const override { return false; }
+    void Flash(std::uint32_t, std::uint32_t) override {}
+    bool SetSoundID(int, std::uint32_t) override { return true; }
+    std::uint32_t GetSoundID(int) const override { return 0; }
 };
 
 struct FakeWindow final : cGZWin {
@@ -361,6 +516,48 @@ struct FakeHost final : IRegionScreenHost {
         out.AssignFromCString(text.c_str());
     }
     bool CameraBasis(RegionCameraBasis& out) override { out = basis; return true; }
+
+    // Heightmap builder fake state
+    std::string heightFilePath;
+    std::uint32_t heightW = 0, heightH = 0;
+    std::vector<std::uint8_t> heightGray;
+    std::vector<std::pair<std::string, std::string>> errorDialogs;
+    std::vector<std::pair<int, int>> deletedCities;
+    struct BuiltCity { int x = 0, z = 0; std::uint32_t w = 0, h = 0; std::vector<std::uint8_t> pixels; };
+    std::vector<BuiltCity> builtCities;
+
+    void ShowRegionErrorDialog(const std::string& title, const std::string& message) override {
+        errorDialogs.push_back({title, message});
+    }
+    bool PickHeightFieldFile(cRZString& outPath) override {
+        if (heightFilePath.empty()) return false;
+        outPath = cRZString(heightFilePath.c_str());
+        return true;
+    }
+    bool LoadHeightFieldGrayscale(const cRZString&, std::uint32_t& outW, std::uint32_t& outH,
+                                  std::vector<std::uint8_t>& outGray) override {
+        if (heightW == 0 || heightH == 0 || heightGray.empty()) return false;
+        outW = heightW; outH = heightH; outGray = heightGray;
+        return true;
+    }
+    bool DeleteRegionalCity(RegionCityRef* ref) override {
+        for (auto it = cityRefs.begin(); it != cityRefs.end(); ++it) {
+            if (&it->second == ref) {
+                deletedCities.push_back(it->first);
+                cityRefs.erase(it);
+                return true;
+            }
+        }
+        return false;
+    }
+    bool BuildCityFromHeightMap(const RegionViewCity& city, const std::uint8_t* grayPixels,
+                                std::uint32_t width, std::uint32_t height) override {
+        BuiltCity b;
+        b.x = city.x; b.z = city.z; b.w = width; b.h = height;
+        b.pixels.assign(grayPixels, grayPixels + std::size_t(width) * height);
+        builtCities.push_back(std::move(b));
+        return true;
+    }
 
     FakeBuffer* NewSnapshotBuffer() {
         auto* buffer = new FakeBuffer();
@@ -827,6 +1024,124 @@ int main() {
         std::memcpy(&viewX, host.preferences.data() + kPrefsViewX, sizeof viewX);
         CHECK(viewX == static_cast<std::int32_t>((320.0f + 10.0f) * 256.0f));
         CHECK(Count(host.log, "savePreferences") == 2);
+    }
+
+    // --- cSC4NewRegionDialog (dedup, validation, conflict check, radio toggle, OK/Cancel)
+    {
+        auto* dlgWin = new FakeWindow(&mgr); dlgWin->AddRef();
+        auto* editWin = new FakeTextEditWin(&mgr); editWin->AddRef();
+        editWin->SetID(0x2000);
+        editWin->SetCaption(cRZString("New Region"));
+        auto* plainsBtn = new FakeBtnWin(&mgr); plainsBtn->AddRef(); plainsBtn->SetID(0x1000);
+        auto* waterBtn = new FakeBtnWin(&mgr); waterBtn->AddRef(); waterBtn->SetID(0x1001);
+        auto* okBtn = new FakeBtnWin(&mgr); okBtn->AddRef(); okBtn->SetID(0x8a5b9959);
+        auto* cancelBtn = new FakeBtnWin(&mgr); cancelBtn->AddRef(); cancelBtn->SetID(0xca5b9966);
+        dlgWin->ChildAdd(editWin);
+        dlgWin->ChildAdd(plainsBtn);
+        dlgWin->ChildAdd(waterBtn);
+        dlgWin->ChildAdd(okBtn);
+        dlgWin->ChildAdd(cancelBtn);
+
+        NewRegionDialogHost dhost;
+        dhost.existingNames = {"New Region", "New Region 1", "Cascadia"};
+        std::string createdName;
+        std::uint32_t createdType = 99;
+        int conflicts = 0;
+        dhost.createRegion = [&](const std::string& n, std::uint32_t t) {
+            createdName = n; createdType = t; return 3;
+        };
+        dhost.showConflict = [&](cIGZWin*, std::uint32_t g, std::uint32_t title, std::uint32_t body) {
+            ++conflicts;
+            CHECK(g == 0x6a231eaa && title == 0x4a78b7e8 && body == 0x8a78b80e);
+        };
+
+        auto* dlg = new cSC4NewRegionDialog(dhost);
+        dlg->AddRef();
+        cGZMessage initMsg; initMsg.type = gz::kWinProcInit;
+        CHECK(dlg->DoWinProcMessage(dlgWin, initMsg));
+        CHECK(std::string(editWin->GetCaption().ToChar()) == "New Region 2");
+        CHECK(editWin->maxLen == 0x80);
+        CHECK((editWin->teFlags & gz::kTEUpDownNotify) != 0);
+        CHECK(editWin->selStart == 0 && editWin->selEnd == 12);
+        CHECK(plainsBtn->IsChecked() && !waterBtn->IsChecked());
+        CHECK(okBtn->GetFlag(0x2));
+
+        // Invalid names disable OK button via text-changed notification
+        for (const char* bad : {"", "   ", "bad/name", "..", "a*b"}) {
+            editWin->SetCaption(cRZString(bad));
+            cGZMessage chg; chg.type = gz::kTextEditMsgChanged;
+            CHECK(dlg->DoWinProcMessage(dlgWin, chg));
+            CHECK(!okBtn->GetFlag(0x2));
+        }
+
+        // Duplicate name triggers conflict dialog and does not close
+        editWin->SetCaption(cRZString("cascadia"));
+        cGZMessage chg; chg.type = gz::kTextEditMsgChanged;
+        CHECK(dlg->DoWinProcMessage(dlgWin, chg));
+        CHECK(okBtn->GetFlag(0x2));
+        mgr.dialogs.clear();
+        CHECK(dlg->GZOnButtonActivate(0x8a5b9959));
+        CHECK(conflicts == 1 && mgr.dialogs.empty() && createdName.empty());
+
+        // Toggle Water radio -> create region with baseTerrainType = 1
+        CHECK(dlg->GZOnButtonActivate(0x1001));
+        CHECK(!plainsBtn->IsChecked() && waterBtn->IsChecked());
+        editWin->SetCaption(cRZString("Puget Sound"));
+        CHECK(dlg->GZOnButtonActivate(0x8a5b9959));
+        CHECK(createdName == "Puget Sound" && createdType == 1);
+        CHECK(mgr.dialogs.size() == 1 && mgr.dialogs.back().result == 3);
+
+        // Toggle back to Plains & Cancel -> returns -1
+        CHECK(dlg->GZOnButtonActivate(0x1000));
+        CHECK(plainsBtn->IsChecked() && !waterBtn->IsChecked());
+        mgr.dialogs.clear();
+        CHECK(dlg->GZOnButtonActivate(0xca5b9966));
+        CHECK(mgr.dialogs.size() == 1 && static_cast<std::uint32_t>(mgr.dialogs.back().result) == 0xffffffffu);
+
+        cGZMessage shutMsg; shutMsg.type = gz::kWinProcShutdown;
+        CHECK(dlg->DoWinProcMessage(dlgWin, shutMsg));
+        dlg->Release();
+        dlgWin->ChildDeleteAll();
+        editWin->Release(); plainsBtn->Release(); waterBtn->Release(); okBtn->Release(); cancelBtn->Release();
+        dlgWin->Release();
+    }
+
+    // --- MakeWholeRegion (dimension validation, delete existing cities, slice sub-images, reload)
+    {
+        // Note: screen->Cities() has {x=1, z=2, size=0} and {x=3, z=4, size=0} -> maxX=4, maxZ=5 -> expected 257x321
+        // 1. Mismatch reports exact error and leaves existing cities & reload untouched
+        host.log.clear();
+        host.errorDialogs.clear();
+        host.deletedCities.clear();
+        host.builtCities.clear();
+        host.heightFilePath = "/tmp/fake_region.bmp";
+        host.heightW = 100; host.heightH = 100;
+        host.heightGray.assign(100 * 100, 50);
+        screen->MakeWholeRegion();
+        CHECK(host.errorDialogs.size() == 1);
+        CHECK(host.errorDialogs[0].first == "Region generation error");
+        CHECK(host.errorDialogs[0].second == "Region bitmap size is incorrect -- 100x100, should be 257x321");
+        CHECK(host.deletedCities.empty() && host.builtCities.empty());
+        CHECK(Count(host.log, "reloadRegion") == 0);
+
+        // 2. Valid 257x321 heightmap with gradient pixels -> deletes {1,2} & {3,4}, slices 64x64 sub-images, reloads
+        host.errorDialogs.clear();
+        host.heightW = 257; host.heightH = 321;
+        host.heightGray.resize(257 * 321);
+        for (std::uint32_t y = 0; y < 321; ++y)
+            for (std::uint32_t x = 0; x < 257; ++x)
+                host.heightGray[y * 257 + x] = static_cast<std::uint8_t>((x + y) & 0xff);
+        screen->MakeWholeRegion();
+        CHECK(host.errorDialogs.empty());
+        CHECK(host.deletedCities.size() == 2);
+        CHECK(host.builtCities.size() == 2);
+        CHECK(host.builtCities[0].x == 1 && host.builtCities[0].z == 2 && host.builtCities[0].w == 64 && host.builtCities[0].h == 64);
+        CHECK(host.builtCities[0].pixels[0] == static_cast<std::uint8_t>((64 + 128) & 0xff));
+        CHECK(host.builtCities[0].pixels[63 * 64 + 63] == static_cast<std::uint8_t>((127 + 191) & 0xff));
+        CHECK(host.builtCities[1].x == 3 && host.builtCities[1].z == 4 && host.builtCities[1].w == 64 && host.builtCities[1].h == 64);
+        CHECK(host.builtCities[1].pixels[0] == static_cast<std::uint8_t>((192 + 256) & 0xff));
+        CHECK(host.builtCities[1].pixels[63 * 64 + 63] == static_cast<std::uint8_t>((255 + 319) & 0xff));
+        CHECK(Count(host.log, "reloadRegion") == 1);
     }
 
     // --- Shutdown: unregisters the commands, posts the two region messages, releases the windows and the buffers

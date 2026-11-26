@@ -130,6 +130,8 @@ std::string FindLocaleFile(bool& fromLM) {
             }
         }
     }
+    // 5. Root-level SimCityLocale.dat (PC / Steam Deluxe install)
+    if (std::string root = FindDataFile("SimCityLocale.dat"); !root.empty()) return root;
     return {};
 }
 

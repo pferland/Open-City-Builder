@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <vector>
 
 #include "rz/cRZAutoRefCount.h"
 #include "sc4/ISC4RegionalCity.h"
@@ -48,6 +49,14 @@ void SetCityScreenCallbacks(CityScreenCallbacks callbacks);
 void RegisterExemplarFactories();
 // holder = the region's slot of the city (its regional record is read into it on load and written from it on save)
 bool LoadCityFile(cSC4App& app, const std::string& path, cRZAutoRefCount<cISC4RegionalCity>* holder = nullptr);
+// Creates a brand-new city in `holder` (using pending height image if set); when `headless` is true, screen swaps are suppressed.
+bool NewCityFile(cSC4App& app, cRZAutoRefCount<cISC4RegionalCity>* holder = nullptr, bool headless = false);
+// Pending heightmap data consumed by NativeTerrainHost::NewCityHeightImage() during cSTETerrain::Create().
+void SetNewCityHeightImage(const std::uint8_t* gray, std::uint32_t width, std::uint32_t height);
+void ClearNewCityHeightImage();
+// Reads a PNG or BMP image from disk and converts it to 8-bit grayscale row-major pixels.
+bool LoadGrayscaleHeightFile(const char* path, std::uint32_t& outWidth, std::uint32_t& outHeight,
+                             std::vector<std::uint8_t>& outGray);
 // One framework tick for the services the simulator host registered (NativeSimulatorHost.cpp): cSC4Simulator::OnTick.
 void TickSimulatorServices(std::uint32_t tickNumber);
 // SL::spSimulator vslot 0x98 / 0xa8 (AddAgent / RemoveAgent) on the city's cSC4Simulator: what every simulator's Init / Shutdown

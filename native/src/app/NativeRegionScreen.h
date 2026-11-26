@@ -25,6 +25,8 @@ struct RegionScreenServices {
     cIGZWin* (*createWindowFromScript)(const cGZPersistResourceKey&, cIGZWin*, std::uint32_t) = nullptr;
     std::function<cGZBuffer*(std::uint32_t group, std::uint32_t instance)> loadBitmap;
     std::function<bool(const std::string& path, cRZAutoRefCount<cISC4RegionalCity>* holder)> loadCity;   // loads a city file and enters it
+    std::function<bool(cRZAutoRefCount<cISC4RegionalCity>* holder, bool headless)> newCity;             // creates a brand-new city tile
+    std::function<bool(std::string& outPath)> pickHeightFieldFile;                                      // picks a heightmap image on disk
 
 };
 
